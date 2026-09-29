@@ -1,0 +1,146 @@
+:root {
+  /* EntryZen brand palette (entryzen.com/assets/css/site.css) */
+  --ez-primary: #ff5733;
+  --ez-primary-hover: #f7421a;
+  --ez-bg: #f4f4f4;
+  --ez-primary-rgb: 255, 87, 51;
+  --ez-ink: #0b1220;
+  --ez-muted: #5a6578;
+
+  --bs-primary: var(--ez-primary);
+  --bs-primary-rgb: var(--ez-primary-rgb);
+  --bs-link-color: var(--ez-primary);
+  --bs-link-hover-color: var(--ez-primary-hover);
+  --bs-body-color: var(--ez-ink);
+  --bs-secondary-color: var(--ez-muted);
+  --bs-focus-ring-color: rgba(var(--ez-primary-rgb), 0.25);
+}
+
+.btn-primary {
+  --bs-btn-color: #fff;
+  --bs-btn-bg: var(--ez-primary);
+  --bs-btn-border-color: var(--ez-primary);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-hover-bg: var(--ez-primary-hover);
+  --bs-btn-hover-border-color: var(--ez-primary-hover);
+  --bs-btn-focus-shadow-rgb: var(--ez-primary-rgb);
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-bg: var(--ez-primary-hover);
+  --bs-btn-active-border-color: var(--ez-primary-hover);
+  --bs-btn-disabled-color: #fff;
+  --bs-btn-disabled-bg: var(--ez-primary);
+  --bs-btn-disabled-border-color: var(--ez-primary);
+}
+
+.btn-outline-primary {
+  --bs-btn-color: var(--ez-primary);
+  --bs-btn-border-color: var(--ez-primary);
+  --bs-btn-hover-color: #fff;
+  --bs-btn-hover-bg: var(--ez-primary);
+  --bs-btn-hover-border-color: var(--ez-primary);
+  --bs-btn-focus-shadow-rgb: var(--ez-primary-rgb);
+  --bs-btn-active-color: #fff;
+  --bs-btn-active-bg: var(--ez-primary-hover);
+  --bs-btn-active-border-color: var(--ez-primary-hover);
+  --bs-btn-disabled-color: var(--ez-primary);
+  --bs-btn-disabled-border-color: var(--ez-primary);
+}
+
+.link-primary,
+.text-primary,
+a:not(.btn):not(.nav-link):not(.dropdown-item) {
+  color: var(--ez-primary);
+}
+
+a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
+  color: var(--ez-primary-hover);
+}
+
+.bg-primary,
+.text-bg-primary {
+  background-color: var(--ez-primary) !important;
+  color: #fff !important;
+}
+
+.border-primary {
+  border-color: var(--ez-primary) !important;
+}
+
+.alert-primary {
+  --bs-alert-color: var(--ez-ink);
+  --bs-alert-bg: rgba(var(--ez-primary-rgb), 0.08);
+  --bs-alert-border-color: rgba(var(--ez-primary-rgb), 0.2);
+  --bs-alert-link-color: var(--ez-primary);
+}
+
+.accordion {
+  --bs-accordion-active-color: var(--ez-primary);
+  --bs-accordion-active-bg: rgba(var(--ez-primary-rgb), 0.08);
+  --bs-accordion-btn-focus-border-color: rgba(var(--ez-primary-rgb), 0.5);
+  --bs-accordion-btn-focus-box-shadow: 0 0 0 0.25rem rgba(var(--ez-primary-rgb), 0.25);
+}
+
+.accordion-button:not(.collapsed) {
+  color: var(--bs-accordion-active-color);
+  background-color: var(--bs-accordion-active-bg);
+}
+
+.accordion-button:not(.collapsed)::after {
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23ff5733'%3e%3cpath fill-rule='evenodd' d='M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z'/%3e%3c/svg%3e");
+}
+
+.form-control:focus,
+.form-select:focus {
+  border-color: rgba(var(--ez-primary-rgb), 0.55);
+  box-shadow: 0 0 0 0.25rem rgba(var(--ez-primary-rgb), 0.25);
+}
+
+.form-check-input:checked {
+  background-color: var(--ez-primary);
+  border-color: var(--ez-primary);
+}
+
+.form-check-input:focus {
+  border-color: rgba(var(--ez-primary-rgb), 0.55);
+  box-shadow: 0 0 0 0.25rem rgba(var(--ez-primary-rgb), 0.25);
+}
+
+html,
+body {
+  background-color: var(--ez-bg);
+  color: var(--ez-ink);
+}
+
+.navbar-brand-logo {
+  height: 44px;
+  width: auto;
+}
+
+.login-logo {
+  width: 140px;
+  height: auto;
+}
+
+.wifi-ssid {
+  white-space: pre-wrap;
+}
+
+.hardware-id-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 0.35rem;
+  padding: 0.1rem;
+  color: var(--ez-muted);
+  cursor: pointer;
+  border-radius: 0.2rem;
+}
+
+.hardware-id-copy:hover {
+  color: var(--ez-primary);
+}
+
+.hardware-id-copy.is-copied {
+  color: var(--ez-primary);
+}

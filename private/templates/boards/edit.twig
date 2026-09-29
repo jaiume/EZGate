@@ -1,0 +1,89 @@
+{% extends 'layouts/app.twig' %}
+{% block title %}{{ board.hardware_id }} — {{ app_name }}{% endblock %}
+{% block content %}
+<p><a href="/">Back to dashboard</a></p>
+<h1 class="h3">{{ board.friendly_name ?: board.hardware_id }}</h1>
+<p class="text-secondary"><code>{{ board.hardware_id }}</code></p>
+<form method="post" action="/boards/{{ board.id }}" class="card card-body shadow-sm mb-4">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="mb-3">
+        <label class="form-label" for="friendly_name">Friendly name</label>
+        <input class="form-control" id="friendly_name" name="friendly_name" value="{{ board.friendly_name }}">
+    </div>
+    <div class="mb-3">
+        <label class="form-label" for="site_id">Site</label>
+        <select class="form-select" id="site_id" name="site_id">
+            <option value="">Unassigned</option>
+            {% for site in sites %}
+                <option value="{{ site.id }}" {% if board.site_id == site.id %}selected{% endif %}>{{ site.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="mb-3">
+        <label class="form-label">Relay pulse duration</label>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="pulse_mode" id="board_pulse_inherit" value="inherit"{% if board.pulse_inherit %} checked{% endif %}>
+            <label class="form-check-label" for="board_pulse_inherit">
+                {% if board.site_id %}
+                    Use the site pulse (currently {{ board.pulse_inherited }} ms)
+                {% else %}
+                    Use the app default ({{ board.pulse_default }} ms)
+                {% endif %}
+            </label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="pulse_mode" id="board_pulse_custom" value="custom"{% if not board.pulse_inherit %} checked{% endif %}>
+            <label class="form-check-label" for="board_pulse_custom">Custom for this board</label>
+        </div>
+        <input class="form-control mt-2" id="pulse_duration_ms" name="pulse_duration_ms" type="number" min="50" max="10000" value="{{ board.pulse_duration_ms ?: board.pulse_resolved }}">
+        <div class="form-text">The portal sends the resolved value (currently {{ board.pulse_resolved }} ms) with other board config on the next heartbeat.</div>
+    </div>
+    <button class="btn btn-primary" type="submit">Save</button>
+</form>
+<div class="card card-body shadow-sm mb-4">
+    <h2 class="h5">Firmware</h2>
+    <p class="mb-0">
+        Running
+        <strong>{{ board.reported_firmware_version ?: 'unknown' }}</strong>
+        {% if board.reported_fallback_firmware_version %}
+            <span class="text-secondary">· fallback {{ board.reported_fallback_firmware_version }}</span>
+        {% endif %}
+        {% if board.target_firmware_version and board.target_firmware_version != board.reported_firmware_version %}
+            <span class="text-warning">· pending {{ board.target_firmware_version }}</span>
+            {% if board.ota_progress_label %}
+                <span class="text-secondary">· {{ board.ota_progress_label }}</span>
+            {% endif %}
+        {% endif %}
+    </p>
+</div>
+<div class="card card-body">
+    <h2 class="h5">Last heartbeat</h2>
+    <dl class="row mb-0">
+        <dt class="col-sm-3">When</dt>
+        <dd class="col-sm-9">{{ board.last_heartbeat_at|utc_time('Never') }}</dd>
+        <dt class="col-sm-3">Uptime</dt>
+        <dd class="col-sm-9">{{ board.uptime_label ?: '—' }}</dd>
+        <dt class="col-sm-3">Status</dt>
+        <dd class="col-sm-9">{{ board.last_status ?: '—' }}</dd>
+        <dt class="col-sm-3">Gate state</dt>
+        <dd class="col-sm-9">{{ board.last_gate_state ?: '—' }}</dd>
+        <dt class="col-sm-3">WiFi</dt>
+        <dd class="col-sm-9">
+            {% if board.last_wifi_ssid %}
+                <span class="wifi-ssid">{{ board.last_wifi_ssid }}</span>
+                {% if board.last_wifi_rssi is not null %}({{ board.last_wifi_rssi }} dBm){% endif %}
+            {% else %}
+                —
+            {% endif %}
+        </dd>
+        <dt class="col-sm-3">Current firmware</dt>
+        <dd class="col-sm-9">{{ board.reported_firmware_version ?: '—' }}</dd>
+        <dt class="col-sm-3">Fallback firmware</dt>
+        <dd class="col-sm-9">{{ board.reported_fallback_firmware_version ?: '—' }}</dd>
+        <dt class="col-sm-3">Reported config</dt>
+        <dd class="col-sm-9">{{ board.reported_config_version|utc_time }}</dd>
+        <dt class="col-sm-3">Portal config</dt>
+        <dd class="col-sm-9">{{ board.config_updated_at|utc_time }}</dd>
+    </dl>
+</div>
+{% endblock %}

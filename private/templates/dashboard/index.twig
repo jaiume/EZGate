@@ -1,0 +1,122 @@
+{% extends 'layouts/app.twig' %}
+{% block title %}Dashboard — {{ app_name }}{% endblock %}
+{% block content %}
+<style>
+.site-header-actions {
+    position: absolute;
+    right: 3.25rem;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 3;
+    display: flex;
+    gap: 0.35rem;
+}
+.site-header-edit-spacer {
+    display: inline-block;
+    width: 9.5rem;
+}
+</style>
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Dashboard</h1>
+    <button class="btn btn-outline-primary" type="button" data-bs-toggle="modal" data-bs-target="#addSiteModal">+ Site</button>
+</div>
+
+<div id="dashboard-live" data-interval="{{ live_interval_seconds }}">
+{% include 'dashboard/live.twig' %}
+</div>
+
+<div class="modal fade" id="addSiteModal" tabindex="-1" aria-labelledby="addSiteModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="post" action="/sites" class="modal-content">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="addSiteModalLabel">Add site</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label" for="name">Site name</label>
+                <input class="form-control" id="name" name="name" required autofocus>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="submit">Create site</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="addWifiModal" tabindex="-1" aria-labelledby="addWifiModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="post" action="/sites/0/wifi" class="modal-content" id="addWifiForm">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="return_to" value="/">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="addWifiModalLabel">Add WiFi network</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label" for="wifi_ssid">SSID</label>
+                    <input class="form-control wifi-ssid" id="wifi_ssid" name="ssid" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="wifi_security">Security</label>
+                    <select class="form-select" id="wifi_security" name="security" required>
+                        <option value="open">Open</option>
+                        <option value="wpa2" selected>WPA2</option>
+                        <option value="wpa3">WPA3</option>
+                    </select>
+                </div>
+                <div class="mb-0" id="wifi_password_wrap">
+                    <label class="form-label" for="wifi_password">Password</label>
+                    <input class="form-control" id="wifi_password" name="password" type="password" autocomplete="new-password">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="submit">Add network</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+    var modal = document.getElementById('addWifiModal');
+    var form = document.getElementById('addWifiForm');
+    var ssid = document.getElementById('wifi_ssid');
+    var security = document.getElementById('wifi_security');
+    var password = document.getElementById('wifi_password');
+    var passwordWrap = document.getElementById('wifi_password_wrap');
+    if (!modal || !form) {
+        return;
+    }
+    function syncPassword() {
+        var open = security.value === 'open';
+        passwordWrap.style.display = open ? 'none' : '';
+        password.required = !open;
+        if (open) {
+            password.value = '';
+        }
+    }
+    security.addEventListener('change', syncPassword);
+    modal.addEventListener('show.bs.modal', function (event) {
+        var btn = event.relatedTarget;
+        form.reset();
+        var siteId = btn && btn.getAttribute('data-site-id');
+        form.action = '/sites/' + (siteId || '0') + '/wifi';
+        if (btn && btn.classList.contains('js-add-scanned-wifi')) {
+            ssid.value = btn.getAttribute('data-ssid') || '';
+            var sec = (btn.getAttribute('data-security') || 'wpa2').toLowerCase();
+            if (sec !== 'open' && sec !== 'wpa2' && sec !== 'wpa3') {
+                sec = 'wpa2';
+            }
+            security.value = sec;
+        }
+        syncPassword();
+    });
+})();
+</script>
+<script src="/js/dashboard.js?v=1"></script>
+{% endblock %}

@@ -1,0 +1,15 @@
+/private/vendor/
+/private/var/cache/
+/private/var/logs/*
+!/private/var/logs/.gitkeep
+/private/var/firmware/*
+!/private/var/firmware/.gitkeep
+/private/config/config.ini
+/firmware/.pio/
+/firmware/.venv/
+/firmware/.platformio/
+/firmware/.vscode/
+composer.phar
+.phpunit.result.cache
+private/.phpunit.result.cache
+*.swp

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+export PLATFORMIO_CORE_DIR="${PLATFORMIO_CORE_DIR:-$ROOT/.platformio}"
+if [[ ! -x "$ROOT/.venv/bin/pio" ]]; then
+    echo "Missing $ROOT/.venv. Run: $ROOT/setup-pio.sh" >&2
+    exit 1
+fi
+cd "$ROOT"
+exec "$ROOT/.venv/bin/pio" "$@"

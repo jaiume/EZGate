@@ -1,0 +1,127 @@
+{% extends 'layouts/app.twig' %}
+{% block title %}Help — {{ app_name }}{% endblock %}
+{% block content %}
+<style>
+    .led-demo {
+        width: 1.75rem;
+        height: 1.75rem;
+        border-radius: 50%;
+        margin: 0 auto 0.75rem;
+        background: #22c55e;
+        box-shadow: 0 0 10px rgba(34, 197, 94, 0.85);
+    }
+    .led-setup {
+        animation: led-setup 2s step-end infinite;
+    }
+    .led-hb {
+        animation: led-hb 10s step-end infinite;
+    }
+    .led-2 {
+        animation: led-group-2 1.8s step-end infinite;
+    }
+    .led-3 {
+        animation: led-group-3 2.1s step-end infinite;
+    }
+    .led-4 {
+        animation: led-group-4 2.5s step-end infinite;
+    }
+    @keyframes led-setup {
+        0%, 49% { opacity: 1; }
+        50%, 100% { opacity: 0.12; box-shadow: none; }
+    }
+    @keyframes led-hb {
+        0%, 1.5% { opacity: 1; }
+        2%, 100% { opacity: 0.12; box-shadow: none; }
+    }
+    @keyframes led-group-2 {
+        0%, 10% { opacity: 1; }
+        11%, 20% { opacity: 0.12; box-shadow: none; }
+        21%, 31% { opacity: 1; }
+        32%, 100% { opacity: 0.12; box-shadow: none; }
+    }
+    @keyframes led-group-3 {
+        0%, 8% { opacity: 1; }
+        9%, 17% { opacity: 0.12; box-shadow: none; }
+        18%, 26% { opacity: 1; }
+        27%, 35% { opacity: 0.12; box-shadow: none; }
+        36%, 44% { opacity: 1; }
+        45%, 100% { opacity: 0.12; box-shadow: none; }
+    }
+    @keyframes led-group-4 {
+        0%, 7% { opacity: 1; }
+        8%, 14% { opacity: 0.12; box-shadow: none; }
+        15%, 22% { opacity: 1; }
+        23%, 29% { opacity: 0.12; box-shadow: none; }
+        30%, 37% { opacity: 1; }
+        38%, 44% { opacity: 0.12; box-shadow: none; }
+        45%, 52% { opacity: 1; }
+        53%, 100% { opacity: 0.12; box-shadow: none; }
+    }
+</style>
+<h1 class="h3 mb-3">Help</h1>
+<p class="text-secondary">The Heltec Wireless Stick has one green status LED (GPIO 35). EZGate firmware uses grouped blinks to show connectivity. A fast continuous blink that is not one of these patterns is the bootloader or USB download mode, not the app.</p>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-6 col-xl-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="led-demo led-setup" aria-hidden="true"></div>
+                <h2 class="h5">One second on, one second off</h2>
+                <p class="mb-1">A slow blink, 1 second on then 1 second off, repeating.</p>
+                <p class="text-secondary mb-0">Setup or recovery. The board is broadcasting <code>EZGate-</code> plus the last four of the board id, password <code>ezgate-setup</code>.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="led-demo led-hb" aria-hidden="true"></div>
+                <h2 class="h5">One flash per heartbeat</h2>
+                <p class="mb-1">A short flash about every 10 seconds.</p>
+                <p class="text-secondary mb-0">Normal service. The board has a portal heartbeat over Wi‑Fi or LoRa. LoRa with a confirmed portal path uses this same flash, not the two-blink “no Wi‑Fi” pattern.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="led-demo led-2" aria-hidden="true"></div>
+                <h2 class="h5">Two blinks, then a pause</h2>
+                <p class="mb-1">Two short blinks, then a 1 second pause, repeating.</p>
+                <p class="text-secondary mb-0">No usable uplink in service: no Wi‑Fi and no LoRa parent. The board is retrying saved Wi‑Fi and looking for a LoRa gateway.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="led-demo led-3" aria-hidden="true"></div>
+                <h2 class="h5">Three blinks, then a pause</h2>
+                <p class="mb-1">Three short blinks, then a 1 second pause, repeating.</p>
+                <p class="text-secondary mb-0">Wi‑Fi is up, but internet is not. The board pings <code>google.com</code> on each heartbeat. Clock sync from NTP also waits until this ping succeeds.</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6 col-xl-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-body text-center">
+                <div class="led-demo led-4" aria-hidden="true"></div>
+                <h2 class="h5">Four blinks, then a pause</h2>
+                <p class="mb-1">Four short blinks, then a 1 second pause, repeating.</p>
+                <p class="text-secondary mb-0">Internet works, but the portal heartbeat failed. The board can reach the public internet and still cannot talk to EZGate.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card shadow-sm">
+    <div class="card-body">
+        <h2 class="h5">If the LED is not using these patterns</h2>
+        <ul class="mb-0">
+            <li>No power, or a hard power cycle is still in the bootloader.</li>
+            <li>USB download mode (USB page, Connect). The application firmware is not running.</li>
+            <li>A very fast continuous flicker while an over-the-air firmware image is being written.</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

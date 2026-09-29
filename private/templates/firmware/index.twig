@@ -1,0 +1,252 @@
+{% extends 'layouts/app.twig' %}
+{% block title %}Firmware — {{ app_name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Firmware versions</h1>
+    <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addFirmwareModal" aria-label="Add firmware">+</button>
+</div>
+<p class="text-secondary">Upload a binary. The version is read from the file. Push opens a tree to choose the fleet, sites, or boards.</p>
+
+{% for version in versions %}
+<div class="card shadow-sm mb-3">
+    <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
+            <div>
+                <h2 class="h5 mb-1"><code>{{ version.version }}</code></h2>
+                <p class="small text-secondary mb-0">
+                    {{ version.original_filename }} · {{ version.file_size }} bytes · SHA-256
+                    <code>{{ version.checksum }}</code>
+                    · added {{ version.created_at|utc_time }}
+                </p>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <span class="badge text-bg-secondary">{{ version.running_count }} running</span>
+                <span class="badge text-bg-warning text-dark">{{ version.pending_count }} pending</span>
+                <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#pushFirmwareModal" data-firmware-id="{{ version.id }}" data-firmware-version="{{ version.version }}">Push</button>
+                <form method="post" action="/firmware/{{ version.id }}/delete" class="d-inline" onsubmit="return confirm('Delete firmware {{ version.version }}? Pending pushes of this image will be cancelled. Boards already running it are not affected.');">
+                    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                    <button class="btn btn-outline-danger" type="submit">Delete</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+<p class="text-secondary mb-0">No firmware versions yet.</p>
+{% endfor %}
+
+<div class="modal fade" id="addFirmwareModal" tabindex="-1" aria-labelledby="addFirmwareModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="post" action="/firmware" enctype="multipart/form-data" class="modal-content">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="addFirmwareModalLabel">Add firmware</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label" for="binary">Firmware binary</label>
+                <input class="form-control" id="binary" name="binary" type="file" required>
+                <div class="form-text">The version is read from the firmware file.</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="submit">Add firmware</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="modal fade" id="pushFirmwareModal" tabindex="-1" aria-labelledby="pushFirmwareModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="post" action="/firmware/push" class="modal-content js-fw-tree" id="pushFirmwareForm">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="return_to" value="/firmware">
+            <input type="hidden" name="firmware_id" id="pushFirmwareId" value="">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="pushFirmwareModalLabel">Push firmware</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary" id="pushFirmwareHint">Check a fleet, site, or board, then push to selected. Boards already running this version cannot be selected, so both OTA slots cannot hold the same firmware.</p>
+                <ul class="list-unstyled mb-0">
+                    <li>
+                        <div class="form-check">
+                            <input class="form-check-input js-fw-check" type="checkbox" name="fleet" value="1" id="fw-push-fleet" data-fw-level="fleet">
+                            <label class="form-check-label fw-semibold" for="fw-push-fleet">Fleet</label>
+                        </div>
+                        <ul class="list-unstyled ms-4 mt-1 border-start ps-3">
+                            {% for site in fleet_tree %}
+                            {% set siteKey = site.id ?: 'none' %}
+                            <li class="mb-2">
+                                <div class="form-check">
+                                    <input class="form-check-input js-fw-check" type="checkbox" id="fw-push-site-{{ siteKey }}" data-fw-level="site"{% if site.id %} name="site_ids[]" value="{{ site.id }}"{% else %} name="unassigned" value="1"{% endif %}{% if site.boards is empty %} disabled{% endif %}>
+                                    <label class="form-check-label" for="fw-push-site-{{ siteKey }}">{{ site.name }}</label>
+                                </div>
+                                <ul class="list-unstyled ms-4 mt-1">
+                                    {% for board in site.boards %}
+                                    <li>
+                                        <div class="form-check">
+                                            <input class="form-check-input js-fw-check" type="checkbox" name="board_ids[]" value="{{ board.id }}" id="fw-push-board-{{ board.id }}" data-fw-level="board" data-running-version="{{ board.reported_firmware_version }}">
+                                            <label class="form-check-label" for="fw-push-board-{{ board.id }}">
+                                                {{ board.friendly_name ?: board.hardware_id }}
+                                                {% if board.friendly_name %}<span class="small text-secondary"><code>{{ board.hardware_id }}</code></span>{% endif %}
+                                                {% if board.reported_firmware_version %}<span class="small text-secondary">· {{ board.reported_firmware_version }}</span>{% endif %}
+                                                <span class="small text-secondary js-fw-already d-none"> · already running</span>
+                                            </label>
+                                        </div>
+                                    </li>
+                                    {% else %}
+                                    <li class="small text-secondary">No boards</li>
+                                    {% endfor %}
+                                </ul>
+                            </li>
+                            {% else %}
+                            <li class="small text-secondary">No sites yet.</li>
+                            {% endfor %}
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="submit">Push to selected</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+    function boardChecks(li) {
+        return Array.prototype.slice.call(li.querySelectorAll('input.js-fw-check[data-fw-level="board"]')).filter(function (input) {
+            return !input.disabled;
+        });
+    }
+
+    function setSubtree(li, checked) {
+        Array.prototype.forEach.call(li.querySelectorAll('input.js-fw-check'), function (input) {
+            if (input.disabled) {
+                return;
+            }
+            input.checked = checked;
+            input.indeterminate = false;
+        });
+    }
+
+    function resetTree(form) {
+        Array.prototype.forEach.call(form.querySelectorAll('input.js-fw-check'), function (input) {
+            input.checked = false;
+            input.indeterminate = false;
+        });
+    }
+
+    function applyRunningLock(form, version) {
+        version = (version || '').trim();
+        Array.prototype.forEach.call(form.querySelectorAll('input.js-fw-check[data-fw-level="board"]'), function (input) {
+            var running = (input.getAttribute('data-running-version') || '').trim();
+            var locked = version !== '' && running !== '' && running === version;
+            input.disabled = locked;
+            if (locked) {
+                input.checked = false;
+                input.indeterminate = false;
+            }
+            var already = input.closest('.form-check');
+            already = already ? already.querySelector('.js-fw-already') : null;
+            if (already) {
+                already.classList.toggle('d-none', !locked);
+            }
+        });
+
+        Array.prototype.forEach.call(form.querySelectorAll('input.js-fw-check[data-fw-level="site"]'), function (siteInput) {
+            var siteLi = siteInput.closest('li');
+            var eligible = boardChecks(siteLi);
+            if (!eligible.length) {
+                siteInput.disabled = true;
+                siteInput.checked = false;
+                siteInput.indeterminate = false;
+            } else {
+                siteInput.disabled = false;
+            }
+        });
+
+        var fleetInput = form.querySelector('input.js-fw-check[data-fw-level="fleet"]');
+        if (fleetInput) {
+            var eligible = boardChecks(form);
+            if (!eligible.length) {
+                fleetInput.disabled = true;
+                fleetInput.checked = false;
+                fleetInput.indeterminate = false;
+            } else {
+                fleetInput.disabled = false;
+            }
+        }
+
+        var submit = form.querySelector('button[type="submit"]');
+        if (submit) {
+            submit.disabled = boardChecks(form).length === 0;
+        }
+    }
+
+    function syncTree(form) {
+        Array.prototype.forEach.call(form.querySelectorAll('input.js-fw-check[data-fw-level="site"]'), function (siteInput) {
+            var siteLi = siteInput.closest('li');
+            var boards = boardChecks(siteLi);
+            if (!boards.length) {
+                siteInput.indeterminate = false;
+                return;
+            }
+            var checkedCount = boards.filter(function (input) { return input.checked; }).length;
+            siteInput.checked = checkedCount === boards.length;
+            siteInput.indeterminate = checkedCount > 0 && checkedCount < boards.length;
+        });
+
+        var fleetInput = form.querySelector('input.js-fw-check[data-fw-level="fleet"]');
+        if (!fleetInput) {
+            return;
+        }
+        var boards = boardChecks(form);
+        if (!boards.length) {
+            fleetInput.indeterminate = false;
+            return;
+        }
+        var checkedCount = boards.filter(function (input) { return input.checked; }).length;
+        fleetInput.checked = checkedCount === boards.length;
+        fleetInput.indeterminate = checkedCount > 0 && checkedCount < boards.length;
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('form.js-fw-tree'), function (form) {
+        form.addEventListener('change', function (event) {
+            var input = event.target;
+            if (!input.classList || !input.classList.contains('js-fw-check')) {
+                return;
+            }
+            var level = input.getAttribute('data-fw-level');
+            if (level === 'fleet' || level === 'site') {
+                setSubtree(input.closest('li'), input.checked);
+            }
+            syncTree(form);
+        });
+        syncTree(form);
+    });
+
+    var modal = document.getElementById('pushFirmwareModal');
+    var form = document.getElementById('pushFirmwareForm');
+    var idInput = document.getElementById('pushFirmwareId');
+    var title = document.getElementById('pushFirmwareModalLabel');
+    if (!modal || !form || !idInput || !title) {
+        return;
+    }
+    modal.addEventListener('show.bs.modal', function (event) {
+        var button = event.relatedTarget;
+        var firmwareId = button && button.getAttribute('data-firmware-id');
+        var version = button && button.getAttribute('data-firmware-version');
+        idInput.value = firmwareId || '';
+        title.textContent = version ? 'Push ' + version : 'Push firmware';
+        resetTree(form);
+        applyRunningLock(form, version || '');
+        syncTree(form);
+    });
+})();
+</script>
+{% endblock %}

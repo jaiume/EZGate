@@ -1,0 +1,232 @@
+<!-- dashboard-live-fragment -->
+{% if sites %}
+<div class="accordion" id="siteList">
+    {% for site in sites %}
+    {% set siteOpen = open_site_id is not null and open_site_id == site.id %}
+    <div class="accordion-item">
+        <h2 class="accordion-header position-relative">
+            <button class="accordion-button{% if not siteOpen %} collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#site-{{ site.id }}" aria-expanded="{{ siteOpen ? 'true' : 'false' }}">
+                <span class="me-auto fw-semibold">{{ site.name }}</span>
+                <span class="badge text-bg-success me-2">{{ site.online_count }} online</span>
+                <span class="badge text-bg-secondary me-2">{{ site.offline_count }} offline</span>
+            <span class="site-header-edit-spacer" aria-hidden="true"></span>
+            </button>
+            <div class="site-header-actions">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="modal" data-bs-target="#graph-{{ site.id }}">Graph</button>
+                <a class="btn btn-sm btn-outline-primary" href="/sites/{{ site.id }}">Edit</a>
+            </div>
+        </h2>
+        <div id="site-{{ site.id }}" class="accordion-collapse collapse{% if siteOpen %} show{% endif %}" data-bs-parent="#siteList">
+            <div class="accordion-body">
+                {% if site.boards %}
+                <div class="accordion" id="site-{{ site.id }}-boards">
+                    {% for board in site.boards %}
+                    {% set boardOpen = open_id == board.id %}
+                    <div class="accordion-item">
+                        <h2 class="accordion-header">
+                            <button class="accordion-button{% if not boardOpen %} collapsed{% endif %} py-2" type="button" data-bs-toggle="collapse" data-bs-target="#board-{{ board.id }}" aria-expanded="{{ boardOpen ? 'true' : 'false' }}">
+                                <span class="me-auto text-truncate pe-3 d-inline-flex align-items-center">
+                                    <span class="fw-semibold">{{ board.friendly_name ?: board.hardware_id }}</span>
+                                    {% if board.friendly_name %}<span class="text-secondary ms-2"><code>{{ board.hardware_id }}</code></span>{% endif %}
+                                    {% include 'partials/copy_hardware_id.twig' with { hardware_id: board.hardware_id } %}
+                                </span>
+                                {% if board.online %}
+                                    <span class="badge text-bg-success me-3">Online</span>
+                                {% else %}
+                                    <span class="badge text-bg-secondary me-3">Offline</span>
+                                {% endif %}
+                                {% if board.config_pending %}
+                                    <span class="badge text-bg-warning text-dark me-3">Pending config</span>
+                                {% endif %}
+                                {% if board.firmware_pending %}
+                                    <span class="badge text-bg-warning text-dark me-3">Pending firmware{% if board.ota_percent is not null %} {{ board.ota_percent }}%{% endif %}</span>
+                                {% endif %}
+                                <span class="text-secondary small text-nowrap me-3">{{ board.link_label ?: '—' }}</span>
+                                <span class="text-secondary small text-nowrap me-3">{{ board.last_heartbeat_at|utc_time('Never') }}</span>
+                                <span class="text-secondary small text-nowrap me-2">
+                                    {% if board.signal_rssi is not null %}{{ board.signal_rssi }} dBm{% else %}—{% endif %}
+                                </span>
+                            </button>
+                        </h2>
+                        <div id="board-{{ board.id }}" class="accordion-collapse collapse{% if boardOpen %} show{% endif %}">
+                            <div class="accordion-body">
+                                <dl class="row mb-3">
+                                    <dt class="col-sm-3">Current firmware</dt>
+                                    <dd class="col-sm-9">
+                                        {{ board.reported_firmware_version ?: '—' }}
+                                        {% if board.firmware_pending %}
+                                            <div class="small text-warning">Pending {{ board.target_firmware_version }}</div>
+                                            {% if board.ota_progress_label %}
+                                                <div class="small">{{ board.ota_progress_label }}</div>
+                                                <div class="progress mt-1" style="max-width: 16rem; height: 0.5rem;" role="progressbar" aria-valuenow="{{ board.ota_percent }}" aria-valuemin="0" aria-valuemax="100">
+                                                    <div class="progress-bar bg-warning" style="width: {{ board.ota_percent }}%"></div>
+                                                </div>
+                                            {% endif %}
+                                        {% endif %}
+                                    </dd>
+                                    <dt class="col-sm-3">Fallback firmware</dt>
+                                    <dd class="col-sm-9">{{ board.reported_fallback_firmware_version ?: '—' }}</dd>
+                                    <dt class="col-sm-3">Uptime</dt>
+                                    <dd class="col-sm-9">{{ board.uptime_label ?: '—' }}</dd>
+                                    <dt class="col-sm-3">Relay pulse</dt>
+                                    <dd class="col-sm-9">{{ board.pulse_ms }} ms</dd>
+                                    <dt class="col-sm-3">Configuration</dt>
+                                    <dd class="col-sm-9">
+                                        {% if board.config_pending %}
+                                            <span class="text-warning">Pending configuration change</span>
+                                            <div class="small text-secondary">Waiting for a heartbeat to confirm the board is up to date.</div>
+                                        {% else %}
+                                            Up to date
+                                        {% endif %}
+                                        {% if board.lora_only %}
+                                            <div class="small mt-1">LoRa only (WiFi used only until an upstream LoRa path is confirmed)</div>
+                                        {% endif %}
+                                    </dd>
+                                    {% if board.radio_stats %}
+                                    <dt class="col-sm-3">Radio</dt>
+                                    <dd class="col-sm-9 small">
+                                        {% if board.radio_stats.role %}{{ board.radio_stats.role }}{% endif %}
+                                        {% if board.radio_stats.hops_to_gateway is defined %} · hops {{ board.radio_stats.hops_to_gateway }}{% endif %}
+                                        {% if board.radio_stats.parent %}
+                                            · parent {{ board.radio_stats.parent }}
+                                            {% if board.radio_stats.parent_rssi is defined and board.radio_stats.parent_rssi is not null %} · lora {{ board.radio_stats.parent_rssi }} dBm{% endif %}
+                                        {% endif %}
+                                        {% if board.radio_stats.tx is defined %} · tx {{ board.radio_stats.tx }}/rx {{ board.radio_stats.rx|default(0) }}/fail {{ board.radio_stats.fail|default(0) }}{% endif %}
+                                        {% if board.radio_stats.queue_drop_ota is defined %} · drops o{{ board.radio_stats.queue_drop_open|default(0) }}/h{{ board.radio_stats.queue_drop_hb|default(0) }}/c{{ board.radio_stats.queue_drop_config|default(0) }}/f{{ board.radio_stats.queue_drop_ota|default(0) }}{% endif %}
+                                        {% if board.radio_stats.chunk_kind is defined %}
+                                            · chunk {{ board.radio_stats.chunk_kind|default('blob') }} {{ board.radio_stats.chunk_got|default(0) }}/{{ board.radio_stats.chunk_total|default(0) }}
+                                        {% endif %}
+                                    </dd>
+                                    {% endif %}
+                                    <dt class="col-sm-3">Open</dt>
+                                    <dd class="col-sm-9">{{ board.open_status ?: '—' }}</dd>
+                                    <dt class="col-sm-3">Route to portal</dt>
+                                    <dd class="col-sm-9">
+                                        {% if board.portal_route|length > 1 %}
+                                            <div class="d-flex flex-wrap align-items-center gap-1">
+                                                {% for hop in board.portal_route %}
+                                                    {% if not loop.first %}<span class="text-secondary px-1">&rarr;</span>{% endif %}
+                                                    <span{% if hop.kind == 'wifi' %} class="wifi-ssid"{% endif %}>
+                                                        {{ hop.label }}
+                                                        {% if hop.detail is defined %}<span class="small text-secondary">({{ hop.detail }})</span>{% endif %}
+                                                    </span>
+                                                {% endfor %}
+                                            </div>
+                                        {% else %}
+                                            <span class="text-secondary">No path to the portal reported.</span>
+                                        {% endif %}
+                                    </dd>
+                                    <dt class="col-sm-3">Other networks</dt>
+                                    <dd class="col-sm-9">
+                                        {% if board.other_options %}
+                                            <ul class="list-unstyled mb-2">
+                                                {% for opt in board.other_options %}
+                                                    <li class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                                                        <span class="wifi-ssid">{{ opt.ssid ?: '—' }}</span>
+                                                        {% if opt.rssi is defined %}<span class="small text-secondary">{{ opt.rssi }} dBm</span>{% endif %}
+                                                        {% if opt.security %}<span class="small text-secondary">{{ opt.security }}</span>{% endif %}
+                                                        {% if opt.ssid not in site.configured_ssids %}
+                                                        <button
+                                                            class="btn btn-sm btn-outline-primary js-add-scanned-wifi"
+                                                            type="button"
+                                                            data-bs-toggle="modal"
+                                                            data-bs-target="#addWifiModal"
+                                                            data-site-id="{{ site.id }}"
+                                                            data-ssid="{{ opt.ssid }}"
+                                                            data-security="{{ opt.security ?: 'wpa2' }}"
+                                                        >Add to site</button>
+                                                        {% endif %}
+                                                    </li>
+                                                {% endfor %}
+                                            </ul>
+                                        {% else %}
+                                            <p class="text-secondary mb-2">No scan results yet.</p>
+                                        {% endif %}
+                                        {% if board.scan_requested %}
+                                            <p class="small text-warning mb-2">Scan requested; waiting for the board.</p>
+                                        {% endif %}
+                                        <form method="post" action="/boards/{{ board.id }}/scan" class="mb-0">
+                                            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                                            <input type="hidden" name="return_to" value="/">
+                                            <button class="btn btn-sm btn-outline-secondary" type="submit">Scan WiFi</button>
+                                        </form>
+                                    </dd>
+                                </dl>
+                                <div class="d-flex flex-wrap gap-2">
+                                    <form method="post" action="/boards/{{ board.id }}/trigger" class="mb-0" onsubmit="return confirm('Queue an open pulse on this board?');">
+                                        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                                        <button class="btn btn-sm btn-outline-success" type="submit">Test Trigger</button>
+                                    </form>
+                                    <form method="post" action="/boards/{{ board.id }}/reboot" class="mb-0" onsubmit="return confirm('Queue a reboot on this board?');">
+                                        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                                        <input type="hidden" name="return_to" value="/">
+                                        <button class="btn btn-sm btn-outline-secondary" type="submit"{% if board.reboot_requested %} disabled{% endif %}>Reboot</button>
+                                    </form>
+                                    <form method="post" action="/boards/{{ board.id }}/reprovision" class="mb-0" onsubmit="return confirm('Push the current configuration to this board on the next heartbeat?');">
+                                        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                                        <input type="hidden" name="return_to" value="/">
+                                        <button class="btn btn-sm btn-outline-secondary" type="submit"{% if board.config_pending %} disabled{% endif %}>Reprovision</button>
+                                    </form>
+                                    <form method="post" action="/boards/{{ board.id }}/lora-only" class="mb-0" onsubmit="return confirm('{% if board.lora_only %}Allow WiFi again on this board?{% else %}Use LoRa only after the board confirms an upstream LoRa path?{% endif %}');">
+                                        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                                        <input type="hidden" name="return_to" value="/">
+                                        <input type="hidden" name="lora_only" value="{% if board.lora_only %}0{% else %}1{% endif %}">
+                                        <button class="btn btn-sm btn-outline-secondary" type="submit">{% if board.lora_only %}Allow WiFi{% else %}LoRa only{% endif %}</button>
+                                    </form>
+                                    <a class="btn btn-sm btn-outline-primary" href="/boards/{{ board.id }}">Edit</a>
+                                </div>
+                                {% if board.reboot_requested %}
+                                    <p class="small text-warning mb-0 mt-2">Reboot queued; waiting for the board.</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="text-secondary mb-0">No boards on this site.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-secondary mb-0">No sites yet.</p>
+{% endif %}
+
+{% for site in sites %}
+<div class="modal fade" id="graph-{{ site.id }}" tabindex="-1" aria-labelledby="graph-{{ site.id }}-label" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="graph-{{ site.id }}-label">Connectivity graph — {{ site.name }}</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    {% for node in site.graph.nodes %}
+                        <span class="badge {% if node.kind == 'portal' %}text-bg-primary{% elseif node.kind == 'wifi' %}text-bg-info{% elseif node.online %}text-bg-success{% else %}text-bg-secondary{% endif %}">
+                            {{ node.label }}{% if node.role is defined and node.role and node.role != 'offline' %} · {{ node.role }}{% endif %}
+                        </span>
+                    {% endfor %}
+                </div>
+                {% if site.graph.edges %}
+                    <ul class="list-unstyled mb-0">
+                        {% for edge in site.graph.edges %}
+                            <li class="mb-1">
+                                <span{% if edge.kind == 'wifi' or edge.kind == 'uplink' %} class="wifi-ssid"{% endif %}>{{ edge.from_label }}</span>
+                                <span class="text-secondary px-1">&rarr;</span>
+                                <span>{{ edge.to_label }}</span>
+                                <span class="small text-secondary">({{ edge.kind }}{% if edge.rssi is defined %} · {{ edge.rssi }} dBm{% endif %})</span>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p class="text-secondary mb-0">No live links reported. Offline boards still appear above.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endfor %}

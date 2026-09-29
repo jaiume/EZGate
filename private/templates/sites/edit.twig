@@ -1,0 +1,119 @@
+{% extends 'layouts/app.twig' %}
+{% block title %}{{ site.name }} — {{ app_name }}{% endblock %}
+{% block content %}
+<p><a href="/">Back to dashboard</a></p>
+<form method="post" action="/sites/{{ site.id }}" class="card card-body shadow-sm mb-4">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <div class="mb-3">
+        <label class="form-label" for="name">Site name</label>
+        <input class="form-control" id="name" name="name" value="{{ site.name }}" required>
+    </div>
+    <fieldset class="mb-3">
+        <legend class="form-label fs-6">Relay pulse duration</legend>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="pulse_mode" id="site_pulse_inherit" value="inherit"{% if site.pulse_inherit %} checked{% endif %}>
+            <label class="form-check-label" for="site_pulse_inherit">Use the app default ({{ site.pulse_default }} ms)</label>
+        </div>
+        <div class="form-check">
+            <input class="form-check-input" type="radio" name="pulse_mode" id="site_pulse_custom" value="custom"{% if not site.pulse_inherit %} checked{% endif %}>
+            <label class="form-check-label" for="site_pulse_custom">Custom for this site</label>
+        </div>
+        <input class="form-control mt-2" id="pulse_duration_ms" name="pulse_duration_ms" type="number" min="50" max="10000" value="{{ site.pulse_duration_ms ?: site.pulse_default }}">
+        <div class="form-text">Boards on this site inherit this unless they set their own. The portal currently sends {{ site.pulse_resolved }} ms.</div>
+    </fieldset>
+    <button class="btn btn-primary" type="submit">Save</button>
+</form>
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2 class="h5 mb-0">WiFi networks</h2>
+            <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addWifiModal" aria-label="Add WiFi network">+</button>
+        </div>
+        <p class="text-secondary">Boards on this site use the best of these configured networks.</p>
+        {% if wifi_networks %}
+        <div class="table-responsive">
+            <table class="table align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>SSID</th>
+                        <th>Security</th>
+                        <th>Connected directly</th>
+                        <th>Routed through</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for network in wifi_networks %}
+                    <tr>
+                        <td class="wifi-ssid">{{ network.ssid }}</td>
+                        <td>{{ network.security_label }}</td>
+                        <td>{{ network.direct_count }}</td>
+                        <td>{{ network.routed_count }}</td>
+                        <td class="text-end">
+                            <form method="post" action="/sites/{{ site.id }}/wifi/{{ network.id }}/delete" class="mb-0">
+                                <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                                <button class="btn btn-sm btn-outline-danger" type="submit">Remove</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-secondary mb-0">No WiFi networks configured.</p>
+        {% endif %}
+    </div>
+</div>
+<form method="post" action="/sites/{{ site.id }}/delete" onsubmit="return confirm('Delete this site? Boards will become unassigned.');">
+    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+    <button class="btn btn-outline-danger" type="submit">Delete site</button>
+</form>
+
+<div class="modal fade" id="addWifiModal" tabindex="-1" aria-labelledby="addWifiModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="post" action="/sites/{{ site.id }}/wifi" class="modal-content" id="addWifiForm">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="addWifiModalLabel">Add WiFi network</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label" for="wifi_ssid">SSID</label>
+                    <input class="form-control wifi-ssid" id="wifi_ssid" name="ssid" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="wifi_security">Security</label>
+                    <select class="form-select" id="wifi_security" name="security" required>
+                        <option value="wpa2" selected>WPA2</option>
+                        <option value="wpa3">WPA3</option>
+                    </select>
+                </div>
+                <div class="mb-0">
+                    <label class="form-label" for="wifi_password">Password</label>
+                    <input class="form-control" id="wifi_password" name="password" type="password" autocomplete="new-password" required>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="submit">Add network</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+    var modal = document.getElementById('addWifiModal');
+    var form = document.getElementById('addWifiForm');
+    if (!modal || !form) {
+        return;
+    }
+    modal.addEventListener('show.bs.modal', function () {
+        form.reset();
+    });
+})();
+</script>
+{% endblock %}

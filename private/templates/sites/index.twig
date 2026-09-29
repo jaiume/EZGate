@@ -1,0 +1,132 @@
+{% extends 'layouts/app.twig' %}
+{% block title %}Sites — {{ app_name }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Sites</h1>
+    <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addSiteModal" aria-label="Add site">+</button>
+</div>
+
+{% if sites %}
+<div class="accordion" id="siteList">
+    {% for site in sites %}
+    <div class="accordion-item">
+        <h2 class="accordion-header">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#site-{{ site.id }}" aria-expanded="false">
+                <span class="me-auto fw-semibold">{{ site.name }}</span>
+                <span class="badge text-bg-success me-2">{{ site.online_count }} online</span>
+                <span class="badge text-bg-secondary me-2">{{ site.offline_count }} offline</span>
+            </button>
+        </h2>
+        <div id="site-{{ site.id }}" class="accordion-collapse collapse" data-bs-parent="#siteList">
+            <div class="accordion-body">
+                <h3 class="h6">Boards</h3>
+                {% if site.boards %}
+                <div class="table-responsive mb-3">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Board</th>
+                                <th>Status</th>
+                                <th>Firmware</th>
+                                <th>Link</th>
+                                <th>WiFi</th>
+                                <th>Other options</th>
+                                <th>Last heartbeat</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {% for board in site.boards %}
+                            <tr>
+                                <td>
+                                    <a href="/boards/{{ board.id }}">{{ board.friendly_name ?: board.hardware_id }}</a>
+                                    {% if board.friendly_name %}<div class="small text-secondary"><code>{{ board.hardware_id }}</code></div>{% endif %}
+                                </td>
+                                <td>
+                                    {% if board.online %}
+                                        <span class="badge text-bg-success">Online</span>
+                                    {% else %}
+                                        <span class="badge text-bg-secondary">Offline</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {{ board.firmware_version ?: '—' }}
+                                    {% if board.target_firmware_version and board.target_firmware_version != board.firmware_version %}
+                                        <div class="small text-warning">Pending {{ board.target_firmware_version }}</div>
+                                        {% if board.ota_progress_label %}
+                                            <div class="small">{{ board.ota_progress_label }}</div>
+                                        {% endif %}
+                                    {% endif %}
+                                </td>
+                                <td>{{ board.link_type ?: '—' }}</td>
+                                <td>
+                                    {% if board.wifi_ssid %}
+                                        <span class="wifi-ssid">{{ board.wifi_ssid }}</span>
+                                        {% if board.wifi_rssi is not null %}({{ board.wifi_rssi }} dBm){% endif %}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if board.other_options %}
+                                        {% for option in board.other_options %}
+                                            <div class="small">
+                                                {{ option.type ?: 'wifi' }}
+                                                {% if option.ssid %} <span class="wifi-ssid">{{ option.ssid }}</span>{% endif %}
+                                                {% if option.rssi is defined %} ({{ option.rssi }} dBm){% endif %}
+                                            </div>
+                                        {% endfor %}
+                                    {% else %}
+                                        —
+                                    {% endif %}
+                                </td>
+                                <td>{{ board.last_heartbeat_at|utc_time('Never') }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-secondary">No boards on this site.</p>
+                {% endif %}
+
+                <h3 class="h6">WiFi networks</h3>
+                {% if site.wifi_networks %}
+                <ul class="list-unstyled mb-3">
+                    {% for network in site.wifi_networks %}
+                        <li class="wifi-ssid">{{ network.ssid }}</li>
+                    {% endfor %}
+                </ul>
+                {% else %}
+                <p class="text-secondary">No WiFi networks configured.</p>
+                {% endif %}
+
+                <a class="btn btn-sm btn-outline-primary" href="/sites/{{ site.id }}">Edit</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="text-secondary mb-0">No sites yet.</p>
+{% endif %}
+
+<div class="modal fade" id="addSiteModal" tabindex="-1" aria-labelledby="addSiteModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form method="post" action="/sites" class="modal-content">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="addSiteModalLabel">Add site</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label" for="name">Site name</label>
+                <input class="form-control" id="name" name="name" required autofocus>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="submit">Create site</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}

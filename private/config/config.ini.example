@@ -1,0 +1,52 @@
+[app]
+name = "EZGate"
+debug = false
+isolation_timeout_seconds = 60
+pulse_duration_ms = 500
+
+[wifi]
+heartbeat_interval_seconds = 5
+internet_host = "8.8.8.8"
+ntp_server_1 = "pool.ntp.org"
+ntp_server_2 = "time.google.com"
+ota_chunk_bytes = 51200
+roam_rssi_dbm = -80
+roam_hysteresis_dbm = 8
+
+[lora]
+heartbeat_interval_seconds = 5
+ota_chunk_bytes = 192
+frequency_hz = 915000000
+isolation_misses = 3
+hop_limit = 3
+tx_retries = 3
+discovery_delay_min_ms = 50
+discovery_delay_max_ms = 250
+stagger_jitter_ms = 200
+route_expiry_intervals = 3
+ota_max_per_gateway = 1
+ota_airtime_budget_ms = 400
+log_radio = true
+
+[auth]
+username = admin
+password = change-this-admin-password
+session_name = ezgate_session
+
+[database]
+host = localhost
+name = db_name
+user = db_user
+pass = "db_password"
+charset = utf8mb4
+
+[api]
+; Preconfigured key for POST /api/trigger
+api_key = change-this-api-key
+
+[logging]
+path = var/logs/app.log
+
+[security]
+; CSRF is required for operator form posts
+csrf_ttl_seconds = 7200
