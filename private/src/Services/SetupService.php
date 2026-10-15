@@ -8,7 +8,6 @@ use App\DAO\BoardDAO;
 use App\DAO\SiteDAO;
 use App\DAO\WifiNetworkDAO;
 use App\Support\LoraKeys;
-use App\Support\PulseDuration;
 use App\Support\WifiSecurity;
 use App\Support\WifiSsid;
 
@@ -17,7 +16,8 @@ class SetupService
     public function __construct(
         private SiteDAO $siteDAO,
         private WifiNetworkDAO $wifiNetworkDAO,
-        private BoardDAO $boardDAO
+        private BoardDAO $boardDAO,
+        private VirtualDeviceService $virtualDeviceService
     ) {
     }
 
@@ -86,9 +86,10 @@ class SetupService
             $id = $this->boardDAO->create($hardwareId, $friendlyName, $siteId);
         } else {
             $id = (int) $board['id'];
-            $pulse = PulseDuration::stored($board['pulse_duration_ms'] ?? null);
-            $this->boardDAO->update($id, $friendlyName, $siteId, $pulse);
+            $this->boardDAO->update($id, $friendlyName, $siteId, null);
         }
+        $this->virtualDeviceService->ensureForBoard($id);
+        $this->virtualDeviceService->syncOneRelayName($id, $friendlyName);
 
         $this->boardDAO->bumpConfigVersionForSite($siteId);
         if (empty($site['lora_key'])) {

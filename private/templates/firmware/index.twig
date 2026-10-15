@@ -1,18 +1,24 @@
 {% extends 'layouts/app.twig' %}
-{% block title %}Firmware — {{ app_name }}{% endblock %}
+{% block title %}OTA — {{ app_name }}{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-    <h1 class="h3 mb-0">Firmware versions</h1>
+    <h1 class="h3 mb-0">OTA</h1>
     <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addFirmwareModal" aria-label="Add firmware">+</button>
 </div>
-<p class="text-secondary">Upload a binary. The version is read from the file. Push opens a tree to choose the fleet, sites, or boards.</p>
+<p class="text-secondary">Upload a binary for one board type. The version is read from the file. Push opens a tree of boards of that type.</p>
+
+<div class="mb-3">
+    {% for type in board_types %}
+        <a class="btn btn-sm {% if board_type_id == type.id %}btn-primary{% else %}btn-outline-primary{% endif %}" href="/ota?type={{ type.id }}">{{ type.name }}</a>
+    {% endfor %}
+</div>
 
 {% for version in versions %}
 <div class="card shadow-sm mb-3">
     <div class="card-body">
         <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
             <div>
-                <h2 class="h5 mb-1"><code>{{ version.version }}</code></h2>
+                <h2 class="h5 mb-1"><code>{{ version.version }}</code> <span class="badge text-bg-light border">{{ version.board_type_name }}</span></h2>
                 <p class="small text-secondary mb-0">
                     {{ version.original_filename }} · {{ version.file_size }} bytes · SHA-256
                     <code>{{ version.checksum }}</code>
@@ -22,7 +28,7 @@
             <div class="d-flex flex-wrap align-items-center gap-2">
                 <span class="badge text-bg-secondary">{{ version.running_count }} running</span>
                 <span class="badge text-bg-warning text-dark">{{ version.pending_count }} pending</span>
-                <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#pushFirmwareModal" data-firmware-id="{{ version.id }}" data-firmware-version="{{ version.version }}">Push</button>
+                <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#pushFirmwareModal" data-firmware-id="{{ version.id }}" data-firmware-version="{{ version.version }}" data-board-type-id="{{ version.board_type_id }}">Push</button>
                 <form method="post" action="/firmware/{{ version.id }}/delete" class="d-inline" onsubmit="return confirm('Delete firmware {{ version.version }}? Pending pushes of this image will be cancelled. Boards already running it are not affected.');">
                     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
                     <button class="btn btn-outline-danger" type="submit">Delete</button>
@@ -44,6 +50,12 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
+                <label class="form-label" for="board_type_id">Board type</label>
+                <select class="form-select mb-3" id="board_type_id" name="board_type_id" required>
+                    {% for type in board_types %}
+                        <option value="{{ type.id }}"{% if board_type_id == type.id %} selected{% endif %}>{{ type.name }}</option>
+                    {% endfor %}
+                </select>
                 <label class="form-label" for="binary">Firmware binary</label>
                 <input class="form-control" id="binary" name="binary" type="file" required>
                 <div class="form-text">The version is read from the firmware file.</div>
@@ -60,19 +72,19 @@
     <div class="modal-dialog">
         <form method="post" action="/firmware/push" class="modal-content js-fw-tree" id="pushFirmwareForm">
             <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-            <input type="hidden" name="return_to" value="/firmware">
+            <input type="hidden" name="return_to" value="/ota">
             <input type="hidden" name="firmware_id" id="pushFirmwareId" value="">
             <div class="modal-header">
                 <h2 class="modal-title h5" id="pushFirmwareModalLabel">Push firmware</h2>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="text-secondary" id="pushFirmwareHint">Check a fleet, site, or board, then push to selected. Boards already running this version cannot be selected, so both OTA slots cannot hold the same firmware.</p>
+                <p class="text-secondary" id="pushFirmwareHint">Fleet is every {{ board_type_name }} board. A site or board below is only that type. Boards already running this version cannot be selected, so both OTA slots cannot hold the same firmware.</p>
                 <ul class="list-unstyled mb-0">
                     <li>
                         <div class="form-check">
                             <input class="form-check-input js-fw-check" type="checkbox" name="fleet" value="1" id="fw-push-fleet" data-fw-level="fleet">
-                            <label class="form-check-label fw-semibold" for="fw-push-fleet">Fleet</label>
+                            <label class="form-check-label fw-semibold" for="fw-push-fleet">Fleet <span class="fw-normal text-secondary">· every {{ board_type_name }} board</span></label>
                         </div>
                         <ul class="list-unstyled ms-4 mt-1 border-start ps-3">
                             {% for site in fleet_tree %}
@@ -86,7 +98,7 @@
                                     {% for board in site.boards %}
                                     <li>
                                         <div class="form-check">
-                                            <input class="form-check-input js-fw-check" type="checkbox" name="board_ids[]" value="{{ board.id }}" id="fw-push-board-{{ board.id }}" data-fw-level="board" data-running-version="{{ board.reported_firmware_version }}">
+                                            <input class="form-check-input js-fw-check" type="checkbox" name="board_ids[]" value="{{ board.id }}" id="fw-push-board-{{ board.id }}" data-fw-level="board" data-board-type-id="{{ board.board_type_id }}" data-running-version="{{ board.reported_firmware_version }}">
                                             <label class="form-check-label" for="fw-push-board-{{ board.id }}">
                                                 {{ board.friendly_name ?: board.hardware_id }}
                                                 {% if board.friendly_name %}<span class="small text-secondary"><code>{{ board.hardware_id }}</code></span>{% endif %}
@@ -101,7 +113,7 @@
                                 </ul>
                             </li>
                             {% else %}
-                            <li class="small text-secondary">No sites yet.</li>
+                            <li class="small text-secondary">No {{ board_type_name }} boards.</li>
                             {% endfor %}
                         </ul>
                     </li>
@@ -141,11 +153,18 @@
         });
     }
 
-    function applyRunningLock(form, version) {
+    function applyRunningLock(form, version, boardTypeId) {
         version = (version || '').trim();
+        boardTypeId = String(boardTypeId || '').trim();
         Array.prototype.forEach.call(form.querySelectorAll('input.js-fw-check[data-fw-level="board"]'), function (input) {
+            var boardType = String(input.getAttribute('data-board-type-id') || '').trim();
+            var wrongType = boardTypeId !== '' && boardType !== boardTypeId;
+            var boardLi = input.closest('li');
+            if (boardLi) {
+                boardLi.classList.toggle('d-none', wrongType);
+            }
             var running = (input.getAttribute('data-running-version') || '').trim();
-            var locked = version !== '' && running !== '' && running === version;
+            var locked = wrongType || (version !== '' && running !== '' && running === version);
             input.disabled = locked;
             if (locked) {
                 input.checked = false;
@@ -154,12 +173,22 @@
             var already = input.closest('.form-check');
             already = already ? already.querySelector('.js-fw-already') : null;
             if (already) {
-                already.classList.toggle('d-none', !locked);
+                already.classList.toggle('d-none', !locked || wrongType);
             }
         });
 
         Array.prototype.forEach.call(form.querySelectorAll('input.js-fw-check[data-fw-level="site"]'), function (siteInput) {
             var siteLi = siteInput.closest('li');
+            var visible = 0;
+            if (siteLi) {
+                Array.prototype.forEach.call(siteLi.querySelectorAll('input.js-fw-check[data-fw-level="board"]'), function (input) {
+                    var boardLi = input.closest('li');
+                    if (boardLi && !boardLi.classList.contains('d-none')) {
+                        visible++;
+                    }
+                });
+                siteLi.classList.toggle('d-none', visible === 0);
+            }
             var eligible = boardChecks(siteLi);
             if (!eligible.length) {
                 siteInput.disabled = true;
@@ -241,10 +270,11 @@
         var button = event.relatedTarget;
         var firmwareId = button && button.getAttribute('data-firmware-id');
         var version = button && button.getAttribute('data-firmware-version');
+        var boardTypeId = button && button.getAttribute('data-board-type-id');
         idInput.value = firmwareId || '';
         title.textContent = version ? 'Push ' + version : 'Push firmware';
         resetTree(form);
-        applyRunningLock(form, version || '');
+        applyRunningLock(form, version || '', boardTypeId || '');
         syncTree(form);
     });
 })();

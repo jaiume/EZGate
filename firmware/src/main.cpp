@@ -45,6 +45,7 @@ bool lastPortalAttemptOk = false;
 bool ntpStarted = false;
 bool heartbeatFlash = false;
 int pulseMs = EZG_DEFAULT_PULSE_MS;
+String virtualDeviceId;
 String configVersion;
 String friendlyName;
 String internetHost = EZG_PING_HOST;
@@ -53,6 +54,7 @@ String ntpServer2 = EZG_NTP_SERVER_2;
 int siteId = 0;
 String hardwareId;
 int pendingCommandId = 0;
+int reportedCommandId = 0;
 uint32_t lastOpenCmd = 0;
 bool pulseRequested = false;
 unsigned long pulseUntilMs = 0;
@@ -90,14 +92,17 @@ int otaWifiChunk = EZG_OTA_CHUNK_BYTES;
 int otaLoraChunk = EZG_OTA_LORA_CHUNK_BYTES;
 bool loraOnly = false;
 bool wifiRoamActive = false;
+bool wifiFloorDropped = false;
 bool roamScanWanted = false;
 bool scanReportToPortal = false;
-int wifiRoamRssi = EZG_WIFI_ROAM_RSSI_DBM;
-int wifiRoamHyst = EZG_WIFI_ROAM_HYST_DBM;
+int wifiRssiFloor = EZG_WIFI_RSSI_FLOOR_DBM;
+int wifiRssiMargin = EZG_WIFI_RSSI_MARGIN_DBM;
 unsigned long lastRoamScanMs = 0;
 unsigned long wifiWeakSinceMs = 0;
+unsigned long wifiAboveFloorSinceMs = 0;
 unsigned long lastRoamSwitchMs = 0;
 int loraFreqHz = EZG_LORA_FREQ_HZ;
+int loraRssiFloor = EZG_LORA_RSSI_FLOOR_DBM;
 int isolationMisses = 3;
 int loraHopLimit = 3;
 int loraTxRetries = 3;
@@ -105,6 +110,7 @@ int loraDiscMinMs = 50;
 int loraDiscMaxMs = 250;
 int loraStaggerMs = 200;
 int loraRouteExpiry = 3;
+int loraBeaconMultiple = 5;
 int loraOtaMax = 1;
 int loraOtaAirtimeMs = 400;
 bool loraLogRadio = true;
@@ -150,6 +156,8 @@ void serviceLed();
 void flashHeartbeatLed();
 void startRelayPulse();
 void applyConfigObject(JsonObjectConst cfg);
+void applyVirtualDevices(JsonArrayConst devices);
+bool handleOpenCommand(uint32_t cmd);
 void beginOtaSession(JsonObjectConst fw);
 void abortOtaSession(const char *why);
 void finishOtaSession();
@@ -327,6 +335,7 @@ void loadConfig() {
     pulseMs = prefs.getInt("pulse_ms", EZG_DEFAULT_PULSE_MS);
     configVersion = nvsString("cfg_ver", "");
     friendlyName = nvsString("name", "");
+    virtualDeviceId = nvsString("vd_id", "");
     internetHost = nvsString("net_host", EZG_PING_HOST);
     ntpServer1 = nvsString("ntp1", EZG_NTP_SERVER_1);
     ntpServer2 = nvsString("ntp2", EZG_NTP_SERVER_2);
@@ -342,9 +351,10 @@ void loadConfig() {
     otaWifiChunk = prefs.getInt("ota_wifi", EZG_OTA_CHUNK_BYTES);
     otaLoraChunk = prefs.getInt("ota_lora", EZG_OTA_LORA_CHUNK_BYTES);
     loraOnly = prefs.getBool("lora_only", false);
-    wifiRoamRssi = prefs.getInt("roam_rssi", EZG_WIFI_ROAM_RSSI_DBM);
-    wifiRoamHyst = prefs.getInt("roam_hyst", EZG_WIFI_ROAM_HYST_DBM);
+    wifiRssiFloor = prefs.getInt("roam_rssi", EZG_WIFI_RSSI_FLOOR_DBM);
+    wifiRssiMargin = prefs.getInt("roam_hyst", EZG_WIFI_RSSI_MARGIN_DBM);
     loraFreqHz = prefs.getInt("lora_hz", EZG_LORA_FREQ_HZ);
+    loraRssiFloor = prefs.getInt("lora_floor", EZG_LORA_RSSI_FLOOR_DBM);
     wifiHeartbeatSeconds = clampHeartbeatSeconds(
         prefs.getInt("hb_sec", EZG_HEARTBEAT_SECONDS),
         EZG_HEARTBEAT_SECONDS
@@ -360,6 +370,10 @@ void loadConfig() {
     loraDiscMaxMs = prefs.getInt("disc_max", 250);
     loraStaggerMs = prefs.getInt("stagger", 200);
     loraRouteExpiry = prefs.getInt("rt_exp", 3);
+    loraBeaconMultiple = prefs.getInt("bcn_mul", 5);
+    if (loraBeaconMultiple < 1) {
+        loraBeaconMultiple = 5;
+    }
     loraOtaMax = prefs.getInt("ota_max", 1);
     loraOtaAirtimeMs = prefs.getInt("ota_air", 400);
     loraLogRadio = prefs.getBool("lora_log", true);
@@ -372,11 +386,14 @@ void loadConfig() {
     if (isolationMisses < 1) {
         isolationMisses = 3;
     }
-    if (wifiRoamRssi < -100 || wifiRoamRssi > -50) {
-        wifiRoamRssi = EZG_WIFI_ROAM_RSSI_DBM;
+    if (wifiRssiFloor < -100 || wifiRssiFloor > -50) {
+        wifiRssiFloor = EZG_WIFI_RSSI_FLOOR_DBM;
     }
-    if (wifiRoamHyst < 0 || wifiRoamHyst > 30) {
-        wifiRoamHyst = EZG_WIFI_ROAM_HYST_DBM;
+    if (wifiRssiMargin < 0 || wifiRssiMargin > 30) {
+        wifiRssiMargin = EZG_WIFI_RSSI_MARGIN_DBM;
+    }
+    if (loraRssiFloor < -140 || loraRssiFloor > -40) {
+        loraRssiFloor = EZG_LORA_RSSI_FLOOR_DBM;
     }
     int count = prefs.getInt("wifi_n", 0);
     siteNetworks.clear();
@@ -397,15 +414,17 @@ void saveConfig() {
     prefs.putInt("pulse_ms", pulseMs);
     prefs.putString("cfg_ver", configVersion);
     prefs.putString("name", friendlyName);
+    prefs.putString("vd_id", virtualDeviceId);
     prefs.putString("net_host", internetHost);
     prefs.putString("ntp1", ntpServer1);
     prefs.putString("ntp2", ntpServer2);
     prefs.putInt("ota_wifi", otaWifiChunk);
     prefs.putInt("ota_lora", otaLoraChunk);
     prefs.putBool("lora_only", loraOnly);
-    prefs.putInt("roam_rssi", wifiRoamRssi);
-    prefs.putInt("roam_hyst", wifiRoamHyst);
+    prefs.putInt("roam_rssi", wifiRssiFloor);
+    prefs.putInt("roam_hyst", wifiRssiMargin);
     prefs.putInt("lora_hz", loraFreqHz);
+    prefs.putInt("lora_floor", loraRssiFloor);
     prefs.putInt("hb_sec", wifiHeartbeatSeconds);
     prefs.putInt("hb_lora_sec", loraHeartbeatSeconds);
     prefs.putInt("iso_n", isolationMisses);
@@ -415,6 +434,7 @@ void saveConfig() {
     prefs.putInt("disc_max", loraDiscMaxMs);
     prefs.putInt("stagger", loraStaggerMs);
     prefs.putInt("rt_exp", loraRouteExpiry);
+    prefs.putInt("bcn_mul", loraBeaconMultiple);
     prefs.putInt("ota_max", loraOtaMax);
     prefs.putInt("ota_air", loraOtaAirtimeMs);
     prefs.putBool("lora_log", loraLogRadio);
@@ -432,6 +452,7 @@ void clearConfig() {
     prefs.end();
     siteId = 0;
     pulseMs = EZG_DEFAULT_PULSE_MS;
+    virtualDeviceId = "";
     configVersion = "";
     friendlyName = "";
     internetHost = EZG_PING_HOST;
@@ -445,8 +466,11 @@ void clearConfig() {
     wifiHeartbeatSeconds = EZG_HEARTBEAT_SECONDS;
     loraHeartbeatSeconds = EZG_LORA_HEARTBEAT_SECONDS;
     wifiRoamActive = false;
-    wifiRoamRssi = EZG_WIFI_ROAM_RSSI_DBM;
-    wifiRoamHyst = EZG_WIFI_ROAM_HYST_DBM;
+    wifiFloorDropped = false;
+    wifiAboveFloorSinceMs = 0;
+    wifiRssiFloor = EZG_WIFI_RSSI_FLOOR_DBM;
+    wifiRssiMargin = EZG_WIFI_RSSI_MARGIN_DBM;
+    loraRssiFloor = EZG_LORA_RSSI_FLOOR_DBM;
     siteNetworks.clear();
 }
 
@@ -487,7 +511,13 @@ void flashHeartbeatLed() {
 }
 
 int ledGroupCount() {
-    if (lastPortalAttemptOk || loraLinkPortalOk()) {
+    unsigned long window = (unsigned long) isolationMisses * (unsigned long) wifiHeartbeatSeconds * 1000UL;
+    if (window < 1000UL) {
+        window = 15000UL;
+    }
+    bool wifiFresh = WiFi.status() == WL_CONNECTED && lastPortalOkMs != 0
+        && (millis() - lastPortalOkMs) < window;
+    if (loraLinkPortalOk() || wifiFresh) {
         return 0;
     }
     if (WiFi.status() != WL_CONNECTED && !loraLinkRadioOk() && !loraLinkHasParent()) {
@@ -771,7 +801,21 @@ void ingestScanResults(std::vector<SeenNet> &out, int n) {
 }
 
 void serviceSta() {
-    if ((loraOnly || wifiRoamActive) && (loraLinkPortalOk() || loraLinkHasParent())) {
+    if (!loraLinkPortalOk()) {
+        unsigned long window = (unsigned long) isolationMisses * (unsigned long) wifiHeartbeatSeconds * 1000UL;
+        if (window < 1000UL) {
+            window = 15000UL;
+        }
+        bool wifiFresh = WiFi.status() == WL_CONNECTED && lastPortalOkMs != 0
+            && (millis() - lastPortalOkMs) < window;
+        if (!wifiFresh) {
+            lastPortalAttemptOk = false;
+        }
+    }
+    if (wifiRoamActive || wifiFloorDropped) {
+        return;
+    }
+    if (loraOnly && (loraLinkPortalOk() || loraLinkHasParent())) {
         return;
     }
     if (joinPhase == JoinPhase::Connecting || joinPhase == JoinPhase::GettingIp
@@ -789,9 +833,6 @@ void serviceSta() {
     }
     staTuned = false;
     lastInternetOk = false;
-    if (!loraLinkPortalOk()) {
-        lastPortalAttemptOk = false;
-    }
     if (staConnecting) {
         if (millis() - staConnectStartMs >= (unsigned long) EZG_WIFI_CONNECT_TIMEOUT_MS) {
             Serial.println("STA join timeout");
@@ -800,15 +841,19 @@ void serviceSta() {
             staNetIndex++;
             if (staNetIndex >= siteNetworks.size()) {
                 staNetIndex = 0;
-                lastReconnectAttemptMs = millis();
-            } else {
-                lastReconnectAttemptMs = 0;
+            }
+            if (!loraLinkHasParent()) {
+                lastReconnectAttemptMs = staNetIndex == 0 ? millis() : 0;
             }
         }
         return;
     }
+    if (loraLinkHasParent() && loraLinkUplinkBusy()) {
+        return;
+    }
+    unsigned long reconnectWait = loraLinkHasParent() ? 60000UL : (unsigned long) EZG_RECONNECT_MS;
     if (lastReconnectAttemptMs != 0
-        && millis() - lastReconnectAttemptMs < (unsigned long) EZG_RECONNECT_MS) {
+        && millis() - lastReconnectAttemptMs < reconnectWait) {
         return;
     }
     lastReconnectAttemptMs = millis();
@@ -881,7 +926,8 @@ void serviceAsyncScan() {
             WiFi.scanDelete();
         }
         scanReportToPortal = false;
-        if ((loraOnly || wifiRoamActive) && WiFi.status() != WL_CONNECTED) {
+        if ((loraOnly || wifiRoamActive) && WiFi.status() != WL_CONNECTED
+            && mode != Mode::Setup && !wifiFloorDropped) {
             WiFi.mode(WIFI_OFF);
         }
         return;
@@ -913,7 +959,8 @@ void serviceAsyncScan() {
             offerLoraScanUplink();
         }
         scanReportToPortal = false;
-        if ((loraOnly || wifiRoamActive) && WiFi.status() != WL_CONNECTED) {
+        if ((loraOnly || wifiRoamActive) && WiFi.status() != WL_CONNECTED
+            && mode != Mode::Setup && !wifiFloorDropped) {
             WiFi.mode(WIFI_OFF);
         }
     } else {
@@ -1010,7 +1057,7 @@ bool joinSeenWifi(const SeenNet &hit) {
     WiFi.persistent(false);
     WiFi.setAutoReconnect(true);
     WiFi.disconnect(false, false);
-    WiFi.mode(WIFI_STA);
+    WiFi.mode((mode == Mode::Setup || wifiFloorDropped) ? WIFI_AP_STA : WIFI_STA);
     WiFi.begin(hit.ssid.c_str(), pass.c_str(), hit.channel, hit.bssid);
     staConnecting = true;
     staConnectStartMs = millis();
@@ -1018,21 +1065,48 @@ bool joinSeenWifi(const SeenNet &hit) {
 }
 
 void considerRoam() {
-    if (mode != Mode::Service || otaSession || otaBusy || loraOnly) {
+    if (otaSession || otaBusy || loraOnly) {
         return;
     }
     if (joinPhase == JoinPhase::Connecting || joinPhase == JoinPhase::GettingIp
-        || joinPhase == JoinPhase::Provisioning || joinPhase == JoinPhase::Ready) {
+        || joinPhase == JoinPhase::Provisioning || joinPhase == JoinPhase::Ready
+        || staConnecting) {
         return;
     }
-    if (wifiRoamActive && WiFi.status() != WL_CONNECTED
-        && !loraLinkHasParent() && !loraLinkPortalOk() && !loraLinkHasGatewayPeer()) {
-        wifiRoamActive = false;
+    if (mode != Mode::Service && !(mode == Mode::Setup && wifiFloorDropped)) {
+        return;
+    }
+
+    int hold = wifiRssiFloor + wifiRssiMargin;
+
+    if (mode == Mode::Setup && wifiFloorDropped) {
+        if (WiFi.status() == WL_CONNECTED) {
+            return;
+        }
+        if (lastRoamScanMs == 0 || millis() - lastRoamScanMs >= (unsigned long) EZG_WIFI_ROAM_SCAN_MS) {
+            roamScanWanted = true;
+            lastRoamScanMs = millis();
+        }
+        SeenNet best;
+        if (bestConfiguredWifi(best) && best.rssi >= wifiRssiFloor) {
+            if (wifiAboveFloorSinceMs == 0) {
+                wifiAboveFloorSinceMs = millis();
+            }
+            if (millis() - wifiAboveFloorSinceMs >= (unsigned long) EZG_WIFI_ROAM_SCAN_MS) {
+                joinSeenWifi(best);
+            }
+            return;
+        }
+        wifiAboveFloorSinceMs = 0;
+        return;
     }
 
     if (WiFi.status() == WL_CONNECTED) {
         int rssi = WiFi.RSSI();
-        if (rssi >= wifiRoamRssi) {
+        if (rssi == 0) {
+            return;
+        }
+        if (rssi >= hold) {
             wifiWeakSinceMs = 0;
             if (wifiRoamActive) {
                 wifiRoamActive = false;
@@ -1048,13 +1122,40 @@ void considerRoam() {
         }
         SeenNet best;
         if (bestConfiguredWifi(best) && !isCurrentAp(best)
-            && best.rssi >= wifiRoamRssi && best.rssi >= rssi + wifiRoamHyst) {
+            && best.rssi >= rssi + wifiRssiMargin && best.rssi >= hold) {
             joinSeenWifi(best);
             return;
         }
         bool waited = lastNeighborhood.size() > 0
             || (wifiWeakSinceMs != 0 && millis() - wifiWeakSinceMs >= (unsigned long) EZG_WIFI_ROAM_SCAN_MS);
-        if (waited && loraLinkHasGatewayPeer()) {
+        if (!waited) {
+            return;
+        }
+        if (rssi < wifiRssiFloor) {
+            bool haveLora = loraLinkHasParent() || loraLinkHasGatewayPeer() || loraLinkPortalOk();
+            if (haveLora) {
+                if (!wifiRoamActive) {
+                    wifiRoamActive = true;
+                    Serial.print("EZG wifi below floor ");
+                    Serial.print(rssi);
+                    Serial.println(" dBm; drop WiFi for LoRa");
+                }
+                return;
+            }
+            if (!wifiFloorDropped) {
+                wifiFloorDropped = true;
+                wifiRoamActive = true;
+                wifiAboveFloorSinceMs = 0;
+                Serial.print("EZG wifi below floor ");
+                Serial.print(rssi);
+                Serial.println(" dBm; recovery AP");
+                WiFi.setAutoReconnect(false);
+                WiFi.disconnect(true, false);
+                startSetupAp();
+            }
+            return;
+        }
+        if (loraLinkHasGatewayPeer()) {
             if (!wifiRoamActive) {
                 wifiRoamActive = true;
                 Serial.print("EZG wifi weak ");
@@ -1074,11 +1175,13 @@ void considerRoam() {
     lastRoamScanMs = millis();
     roamScanWanted = true;
     SeenNet best;
-    if (bestConfiguredWifi(best) && best.rssi >= wifiRoamRssi + wifiRoamHyst) {
+    if (bestConfiguredWifi(best) && best.rssi >= hold) {
         joinSeenWifi(best);
         return;
     }
-    if (WiFi.getMode() != WIFI_OFF && !scanAsyncStarted && !staConnecting) {
+    if (WiFi.getMode() != WIFI_OFF && !scanAsyncStarted && !staConnecting
+        && mode != Mode::Setup && !wifiFloorDropped) {
+        WiFi.setAutoReconnect(false);
         WiFi.mode(WIFI_OFF);
     }
 }
@@ -1178,6 +1281,9 @@ void considerIsolation() {
         return;
     }
     if (loraLinkHasParent()) {
+        return;
+    }
+    if (wifiFloorDropped) {
         return;
     }
     if (wifiRoamActive && loraLinkHasGatewayPeer()) {
@@ -1357,14 +1463,11 @@ void applyConfigObject(JsonObjectConst cfg) {
             configVersion = ver;
         }
     }
-    if (cfg["friendly_name"].is<const char *>()) {
-        friendlyName = String(cfg["friendly_name"].as<const char *>());
-    }
     if (!cfg["site_id"].isNull()) {
         siteId = cfg["site_id"].as<int>();
     }
-    if (cfg["pulse_duration_ms"].is<int>()) {
-        pulseMs = cfg["pulse_duration_ms"].as<int>();
+    if (cfg["virtual_devices"].is<JsonArrayConst>()) {
+        applyVirtualDevices(cfg["virtual_devices"].as<JsonArrayConst>());
     }
     if (cfg["internet_host"].is<const char *>()) {
         String host = String(cfg["internet_host"].as<const char *>());
@@ -1401,16 +1504,20 @@ void applyConfigObject(JsonObjectConst cfg) {
     if (loraChunk >= 32) {
         otaLoraChunk = loraChunk;
     }
-    if (cfg["wifi_roam_rssi_dbm"].is<int>()) {
-        int v = cfg["wifi_roam_rssi_dbm"].as<int>();
+    if (cfg["wifi_rssi_floor_dbm"].is<int>() || cfg["wifi_roam_rssi_dbm"].is<int>()) {
+        int v = cfg["wifi_rssi_floor_dbm"].is<int>()
+            ? cfg["wifi_rssi_floor_dbm"].as<int>()
+            : cfg["wifi_roam_rssi_dbm"].as<int>();
         if (v >= -100 && v <= -50) {
-            wifiRoamRssi = v;
+            wifiRssiFloor = v;
         }
     }
-    if (cfg["wifi_roam_hysteresis_dbm"].is<int>()) {
-        int v = cfg["wifi_roam_hysteresis_dbm"].as<int>();
+    if (cfg["wifi_rssi_margin_dbm"].is<int>() || cfg["wifi_roam_hysteresis_dbm"].is<int>()) {
+        int v = cfg["wifi_rssi_margin_dbm"].is<int>()
+            ? cfg["wifi_rssi_margin_dbm"].as<int>()
+            : cfg["wifi_roam_hysteresis_dbm"].as<int>();
         if (v >= 0 && v <= 30) {
-            wifiRoamHyst = v;
+            wifiRssiMargin = v;
         }
     }
     if (cfg["wifi_networks"].is<JsonArrayConst>()) {
@@ -1426,6 +1533,42 @@ void applyConfigObject(JsonObjectConst cfg) {
     }
     loraLinkApplyConfig(cfg);
     saveConfig();
+}
+
+void applyVirtualDevices(JsonArrayConst devices) {
+    if (devices.isNull()) {
+        return;
+    }
+    bool changed = false;
+    for (JsonObjectConst vd : devices) {
+        String id = vd["id"].is<const char *>() ? String(vd["id"].as<const char *>()) : "";
+        id.trim();
+        if (id.length() && id != virtualDeviceId) {
+            virtualDeviceId = id;
+            changed = true;
+        }
+        JsonObjectConst cfg = vd["config"].as<JsonObjectConst>();
+        if (!cfg.isNull()) {
+            if (cfg["friendly_name"].is<const char *>()) {
+                friendlyName = String(cfg["friendly_name"].as<const char *>());
+                changed = true;
+            }
+            JsonArrayConst relays = cfg["relays"].as<JsonArrayConst>();
+            if (!relays.isNull() && relays.size() > 0) {
+                int ms = relays[0]["pulse_duration_ms"] | 0;
+                if (ms >= 50 && ms <= 10000 && ms != pulseMs) {
+                    pulseMs = ms;
+                    changed = true;
+                }
+            }
+        }
+        if (vd["open"].is<JsonObjectConst>()) {
+            handleOpenCommand((uint32_t) (vd["open"]["command_id"] | 0));
+        }
+    }
+    if (changed) {
+        saveConfig();
+    }
 }
 
 void startRelayPulse() {
@@ -1722,6 +1865,53 @@ void collectUniqueScan(std::vector<SeenNet> &out) {
     ingestScanResults(out, n);
 }
 
+void ezgApplyOwnHeartbeat(bool ok, const char *json) {
+    if (!ok || json == nullptr) {
+        lastPortalAttemptOk = false;
+        loraLinkNoteWifiPortal(false);
+        return;
+    }
+    JsonDocument response;
+    if (deserializeJson(response, json)) {
+        lastPortalAttemptOk = false;
+        loraLinkNoteWifiPortal(false);
+        return;
+    }
+    if (!(response["success"] | false)) {
+        lastPortalAttemptOk = false;
+        loraLinkNoteWifiPortal(false);
+        return;
+    }
+    lastPortalAttemptOk = true;
+    loraLinkNoteWifiPortal(true);
+    pendingScanAck = false;
+    lastPortalOkMs = millis();
+    pendingCommandId = 0;
+    flashHeartbeatLed();
+    applyHeartbeatIntervals(response["data"]);
+    if (response["data"]["config"].is<JsonObject>()) {
+        applyConfigObject(response["data"]["config"].as<JsonObject>());
+    }
+    applyVirtualDevices(response["data"]["virtual_devices"].as<JsonArrayConst>());
+    if (response["data"]["scan"] | false) {
+        scanWanted = true;
+    }
+    if (response["data"]["reboot"] | false) {
+        Serial.println("Portal requested reboot");
+        confirmFirmware();
+        delay(250);
+        rebootBoard();
+    }
+    bool offered = false;
+    if (mode == Mode::Service && response["data"]["firmware"].is<JsonObject>()) {
+        offered = true;
+        beginOtaSession(response["data"]["firmware"].as<JsonObject>());
+    }
+    if (!offered && otaSession) {
+        abortOtaSession("offer withdrawn");
+    }
+}
+
 void sendHeartbeat() {
     refreshLinkStatus();
     JsonDocument body;
@@ -1747,9 +1937,15 @@ void sendHeartbeat() {
     if (fallbackVersion.length()) {
         body["fallback_firmware_version"] = fallbackVersion;
     }
-    if (pendingCommandId > 0) {
-        body["completed_command_id"] = pendingCommandId;
-        body["received_command_id"] = pendingCommandId;
+    body["board_type"] = EZG_BOARD_TYPE;
+    if (virtualDeviceId.length()) {
+        JsonArray devices = body["virtual_devices"].to<JsonArray>();
+        JsonObject device = devices.add<JsonObject>();
+        device["id"] = virtualDeviceId;
+        if (pendingCommandId > 0) {
+            device["completed_command_id"] = pendingCommandId;
+            device["received_command_id"] = pendingCommandId;
+        }
     }
     bool ackScan = pendingScanAck;
     if (ackScan) {
@@ -1781,41 +1977,9 @@ void sendHeartbeat() {
 
     String payload;
     serializeJson(body, payload);
-    JsonDocument response;
-    if (!httpPostJson(portalUrl("/api/heartbeat"), payload, response)) {
+    if (!loraLinkEnqueueOwnHeartbeat(payload)) {
         lastPortalAttemptOk = false;
         loraLinkNoteWifiPortal(false);
-        return;
-    }
-    lastPortalAttemptOk = true;
-    loraLinkNoteWifiPortal(true);
-    pendingScanAck = false;
-    lastPortalOkMs = millis();
-    pendingCommandId = 0;
-    flashHeartbeatLed();
-    applyHeartbeatIntervals(response["data"]);
-    if (response["data"]["config"].is<JsonObject>()) {
-        applyConfigObject(response["data"]["config"].as<JsonObject>());
-    }
-    if (response["data"]["open"] | false) {
-        handleOpenCommand((uint32_t) (response["data"]["command_id"] | 0));
-    }
-    if (response["data"]["scan"] | false) {
-        scanWanted = true;
-    }
-    if (response["data"]["reboot"] | false) {
-        Serial.println("Portal requested reboot");
-        confirmFirmware();
-        delay(250);
-        rebootBoard();
-    }
-    bool offered = false;
-    if (mode == Mode::Service && response["data"]["firmware"].is<JsonObject>()) {
-        offered = true;
-        beginOtaSession(response["data"]["firmware"].as<JsonObject>());
-    }
-    if (!offered && otaSession) {
-        abortOtaSession("offer withdrawn");
     }
 }
 
@@ -2520,14 +2684,7 @@ void enterService() {
 }
 
 void sendLoraHeartbeatIfDue() {
-    if (!loraLinkHasParent()) {
-        return;
-    }
-    if (millis() - lastHeartbeatMs < (unsigned long) loraHeartbeatSeconds * 1000UL) {
-        return;
-    }
-    lastHeartbeatMs = millis();
-    loraLinkSendOwnHeartbeat();
+    loraLinkPollUplink();
 }
 
 void leaveRecovery(const char *why) {
@@ -2539,7 +2696,8 @@ void leaveRecovery(const char *why) {
     }
     Serial.println();
     stopSetupAp();
-    if (loraOnly || wifiRoamActive) {
+    if (loraOnly || (wifiRoamActive && !wifiFloorDropped)) {
+        WiFi.setAutoReconnect(false);
         WiFi.disconnect(true, false);
         WiFi.mode(WIFI_OFF);
     } else if (WiFi.status() == WL_CONNECTED) {
@@ -2555,6 +2713,34 @@ void serviceRecovery() {
     }
     if (joinPhase == JoinPhase::Connecting || joinPhase == JoinPhase::GettingIp
         || joinPhase == JoinPhase::Provisioning || joinPhase == JoinPhase::Ready) {
+        return;
+    }
+    if (wifiFloorDropped) {
+        if (loraLinkPortalOk() || loraLinkHasParent() || loraLinkHasGatewayPeer()) {
+            wifiFloorDropped = false;
+            wifiRoamActive = true;
+            wifiAboveFloorSinceMs = 0;
+            leaveRecovery("lora");
+            return;
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            int rssi = WiFi.RSSI();
+            if (rssi == 0) {
+                return;
+            }
+            if (rssi >= wifiRssiFloor) {
+                wifiFloorDropped = false;
+                wifiRoamActive = false;
+                wifiAboveFloorSinceMs = 0;
+                leaveRecovery("wifi");
+                return;
+            }
+            wifiAboveFloorSinceMs = 0;
+            WiFi.setAutoReconnect(false);
+            WiFi.disconnect(true, false);
+            WiFi.mode(WIFI_AP_STA);
+        }
+        sendLoraHeartbeatIfDue();
         return;
     }
     bool wifiPortal = WiFi.status() == WL_CONNECTED && lastPortalOkMs > 0
@@ -2634,6 +2820,20 @@ void ezgFlashHeartbeatLed() {
 
 void ezgApplyConfigObject(JsonObjectConst cfg) {
     applyConfigObject(cfg);
+}
+
+String ezgVirtualDeviceId() {
+    return virtualDeviceId;
+}
+
+void ezgSetVirtualDeviceId(const String &id) {
+    String next = id;
+    next.trim();
+    if (!next.length() || next == virtualDeviceId) {
+        return;
+    }
+    virtualDeviceId = next;
+    saveConfig();
 }
 
 void ezgApplyConfigJson(const char *js, size_t n) {
@@ -2732,12 +2932,18 @@ void loop() {
         loraLinkBegin();
     }
     loraLinkService();
+    loraLinkPollOwnHeartbeat();
     if (loraLinkShouldDropWifi() && WiFi.status() == WL_CONNECTED) {
         if (!ezgUsbHostAttached()) {
-            Serial.println("EZG lora drop WiFi after portal_ok");
+            if (loraOnly) {
+                Serial.println("EZG lora drop WiFi after portal_ok");
+            } else {
+                Serial.println("EZG drop WiFi");
+            }
         }
+        WiFi.setAutoReconnect(false);
         WiFi.disconnect(true, false);
-        WiFi.mode(WIFI_OFF);
+        WiFi.mode((mode == Mode::Setup || wifiFloorDropped) ? WIFI_AP_STA : WIFI_OFF);
     }
     serviceRelay();
     serviceLed();
@@ -2746,6 +2952,9 @@ void loop() {
     if (mode == Mode::Setup) {
         setupServer.handleClient();
         serviceJoin();
+        if (wifiFloorDropped) {
+            considerRoam();
+        }
         serviceRecovery();
         return;
     }
@@ -2757,11 +2966,11 @@ void loop() {
         return;
     }
 
+    if (loraLinkHasParent() && (loraOnly || wifiRoamActive || !lastPortalAttemptOk)) {
+        sendLoraHeartbeatIfDue();
+    }
     if (millis() - lastHeartbeatMs >= (unsigned long) wifiHeartbeatSeconds * 1000UL) {
         lastHeartbeatMs = millis();
-        if (loraOnly && loraLinkHasParent()) {
-            loraLinkSendOwnHeartbeat();
-        }
         sendHeartbeat();
     }
     if (otaChunkDue && !pulseRequested && WiFi.status() == WL_CONNECTED) {

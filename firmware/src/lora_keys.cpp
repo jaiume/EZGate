@@ -126,7 +126,7 @@ void handleUsbLine(const String &line) {
     }
     if (t == "EZGUSB" || t.startsWith("EZGUSB ")) {
         ezgNoteUsbCommand();
-        ezgUsbPrint(String("EZGUSB ok ") + EZG_FIRMWARE_VERSION + " " + hardwareId);
+        ezgUsbPrint(String("EZGUSB ok ") + EZG_FIRMWARE_VERSION + " " + hardwareId + " " + EZG_BOARD_TYPE);
         return;
     }
     if (t == "EZGCLR" || t.startsWith("EZGCLR ")) {

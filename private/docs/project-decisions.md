@@ -9,7 +9,7 @@ Recorded during first-pass setup. Product behavior stays in `private/docs/projec
 - Stack: Slim 4, PHP-DI, Twig, Bootstrap 5.3.8, `config/config.ini`.
 - Database: MariaDB database `EntryZen_ezgate`.
 - Auth: one operator account in `config.ini` (username `admin`). Session cookie for pages. Web auth failure redirects to `/login`. API failures return JSON 401.
-- Device APIs do not use the operator session. A board is identified by the hardware id it sends. `POST /api/trigger` and `GET /api/status` use `api.api_key` from `config.ini`. Consumer contract: `private/docs/consumer-integration.md`.
+- Device APIs do not use the operator session. A board is identified by the hardware id it sends. EntryZen calls a virtual device id on `POST /api/trigger`, `GET /api/status`, `GET /api/accesstag-reader-status`, and `POST /api/accesstags`. Consumer contract: `private/docs/consumer-integration.md`.
 - Tests: PHPUnit unit tests for config-version comparison and the trigger token. Firmware uses the checklist in `firmware/README.md`.
 - Twig is used because the operator portal is server-rendered.
 

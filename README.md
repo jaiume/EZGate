@@ -64,8 +64,10 @@ External callers use an API key from `api.api_key`. They do not use the operator
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/trigger` | Queue an open pulse for a board |
-| `GET` | `/api/status` | Read whether the portal currently shows that board online |
+| `POST` | `/api/trigger` | Queue an open pulse for a virtual device that has relays |
+| `GET` | `/api/status` | Read whether that virtual device's relays are available |
+| `GET` | `/api/accesstag-reader-status` | Read whether a Wiegand device is autonomous or reader-only |
+| `POST` | `/api/accesstags` | Replace an autonomous list, or set where reads are posted |
 
 The request and response contract, including auth headers and error codes, is in [`private/docs/consumer-integration.md`](private/docs/consumer-integration.md).
 
@@ -73,7 +75,7 @@ Boards use separate unauthenticated endpoints identified by hardware id: `GET /a
 
 ## Firmware
 
-PlatformIO project for the Heltec Wireless Stick V3. Current image is **1.0.49**.
+PlatformIO project for the Heltec Wireless Stick V3. Current image is **1.0.51**.
 
 ```bash
 firmware/setup-pio.sh

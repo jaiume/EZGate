@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\DAO\BoardDAO;
+use App\DAO\BoardTypeDAO;
 use App\DAO\FirmwareVersionDAO;
 use App\DAO\SiteDAO;
+use App\Support\BoardTypes;
 use App\Support\FirmwareAlreadyRunning;
 use App\Support\FirmwareUsbImage;
 use App\Support\FirmwareVersionReader;
@@ -19,18 +21,40 @@ class FirmwareService
     public function __construct(
         private FirmwareVersionDAO $firmwareVersionDAO,
         private BoardDAO $boardDAO,
-        private SiteDAO $siteDAO
+        private SiteDAO $siteDAO,
+        private BoardTypeDAO $boardTypeDAO
     ) {
     }
 
-    public function listPage(): array
+    public function listPage(?int $boardTypeId = null): array
     {
+        $types = $this->boardTypeDAO->findAll();
+        if ($boardTypeId === null && $types !== []) {
+            $boardTypeId = (int) $types[0]['id'];
+        }
+        $versions = [];
+        $boardTypeName = '';
+        foreach ($types as $type) {
+            if ((int) $type['id'] === (int) $boardTypeId) {
+                $boardTypeName = (string) $type['name'];
+            }
+        }
+        foreach ($this->firmwareVersionDAO->findAllWithCounts() as $version) {
+            if ($boardTypeId !== null && (int) $version['board_type_id'] !== $boardTypeId) {
+                continue;
+            }
+            $versions[] = $version;
+        }
+
         return [
             'success' => true,
             'message' => 'Firmware versions loaded.',
             'data' => [
-                'versions' => $this->firmwareVersionDAO->findAllWithCounts(),
-                'fleet_tree' => $this->fleetTree(),
+                'versions' => $versions,
+                'board_types' => $types,
+                'board_type_id' => $boardTypeId,
+                'board_type_name' => $boardTypeName,
+                'fleet_tree' => $this->fleetTree($boardTypeId),
             ],
             'error' => null,
         ];
@@ -52,6 +76,9 @@ class FirmwareService
         if ($target === null) {
             return null;
         }
+        if ((int) ($target['board_type_id'] ?? 0) !== (int) ($board['board_type_id'] ?? 0)) {
+            return null;
+        }
 
         $reported = trim((string) ($board['reported_firmware_version'] ?? ''));
         if (!FirmwareAlreadyRunning::shouldOffer($reported, (string) $target['version'])) {
@@ -70,10 +97,13 @@ class FirmwareService
         ];
     }
 
-    public function createFromUpload(?UploadedFileInterface $file): array
+    public function createFromUpload(?UploadedFileInterface $file, int $boardTypeId): array
     {
         if ($file === null || $file->getError() === UPLOAD_ERR_NO_FILE) {
             return $this->fail('A firmware binary is required.', 'VALIDATION_ERROR');
+        }
+        if ($this->boardTypeDAO->findById($boardTypeId) === null) {
+            return $this->fail('Choose a board type.', 'VALIDATION_ERROR');
         }
         if ($file->getError() !== UPLOAD_ERR_OK) {
             return $this->fail('The firmware file could not be uploaded.', 'VALIDATION_ERROR');
@@ -129,9 +159,9 @@ class FirmwareService
             return $this->fail('Could not read a version from that firmware file.', 'VALIDATION_ERROR');
         }
 
-        if ($this->firmwareVersionDAO->findByVersion($version) !== null) {
+        if ($this->firmwareVersionDAO->findByVersionAndType($version, $boardTypeId) !== null) {
             @unlink($path);
-            return $this->fail('Version ' . $version . ' is already in the catalog.', 'VALIDATION_ERROR');
+            return $this->fail('Version ' . $version . ' is already in the catalog for that board type.', 'VALIDATION_ERROR');
         }
 
         $checksum = hash_file('sha256', $path);
@@ -142,6 +172,7 @@ class FirmwareService
 
         try {
             $id = $this->firmwareVersionDAO->create(
+                $boardTypeId,
                 $version,
                 null,
                 $checksum,
@@ -191,19 +222,23 @@ class FirmwareService
                 return $this->fail('Site not found.', 'NOT_FOUND');
             }
             $boards = [];
-            foreach ($this->boardDAO->findAllWithSite() as $board) {
+            foreach ($this->boardsMatchingFirmware($version) as $board) {
                 if ((int) ($board['site_id'] ?? 0) === $siteId) {
                     $boards[] = $board;
                 }
             }
             if ($boards === []) {
-                return $this->fail('No boards at ' . $site['name'] . '.', 'VALIDATION_ERROR');
+                return $this->fail('No boards at ' . $site['name'] . ' can run this firmware.', 'VALIDATION_ERROR');
             }
             return $this->offerToBoards($boards, $firmwareId, $label);
         }
 
         if ($scope === 'fleet') {
-            return $this->offerToBoards($this->boardDAO->findAllWithSite(), $firmwareId, $label);
+            $boards = $this->boardsMatchingFirmware($version);
+            if ($boards === []) {
+                return $this->fail('No boards can run this firmware.', 'VALIDATION_ERROR');
+            }
+            return $this->offerToBoards($boards, $firmwareId, $label);
         }
 
         return $this->fail('Choose whether to push to a board, a site, or the fleet.', 'VALIDATION_ERROR');
@@ -246,13 +281,17 @@ class FirmwareService
             'url' => '/firmware/' . $id . '/file',
         ];
 
+        $type = $this->boardTypeDAO->findById((int) ($version['board_type_id'] ?? 0));
+        $multi = $type !== null && (int) $type['relay_count'] > 1;
+
         return [
             'success' => true,
             'message' => 'USB factory image ready.',
             'data' => [
                 'version' => $version['version'],
-                'flashSize' => '8MB',
-                'flashMode' => 'qio',
+                'board_type' => $type['name'] ?? '',
+                'flashSize' => $multi ? '4MB' : '8MB',
+                'flashMode' => $multi ? 'dio' : 'qio',
                 'flashFreq' => '80m',
                 'segments' => $segments,
             ],
@@ -322,7 +361,8 @@ class FirmwareService
         string $appPath,
         string $bootloaderPath,
         string $partitionsPath,
-        string $bootApp0Path
+        string $bootApp0Path,
+        string $boardTypeName = BoardTypes::HELTEC
     ): array {
         foreach (['app' => $appPath, 'bootloader' => $bootloaderPath, 'partitions' => $partitionsPath, 'boot_app0' => $bootApp0Path] as $label => $path) {
             if (!is_file($path) || filesize($path) <= 0) {
@@ -348,7 +388,12 @@ class FirmwareService
             return $this->fail('Unable to store firmware on the server.', 'INTERNAL_ERROR');
         }
 
-        $existing = $this->firmwareVersionDAO->findByVersion($versionLabel);
+        $boardType = $this->boardTypeDAO->findByName($boardTypeName);
+        $boardTypeId = $boardType !== null ? (int) $boardType['id'] : 0;
+        if ($boardTypeId <= 0) {
+            return $this->fail('Board type not found.', 'VALIDATION_ERROR');
+        }
+        $existing = $this->firmwareVersionDAO->findByVersionAndType($versionLabel, $boardTypeId);
         $stored = $existing['stored_filename'] ?? ('fw_' . bin2hex(random_bytes(16)) . '.bin');
         $destApp = $directory . '/' . $stored;
         if (!copy($appPath, $destApp)) {
@@ -386,6 +431,7 @@ class FirmwareService
             $message = 'Firmware version ' . $versionLabel . ' updated with USB factory extras.';
         } else {
             $id = $this->firmwareVersionDAO->create(
+                $boardTypeId,
                 $versionLabel,
                 null,
                 $checksum,
@@ -412,8 +458,11 @@ class FirmwareService
         }
 
         $label = (string) $version['version'];
-        $all = $this->boardDAO->findAllWithSite();
+        $all = $this->boardsMatchingFirmware($version);
         if ($fleet) {
+            if ($all === []) {
+                return $this->fail('No boards can run this firmware.', 'VALIDATION_ERROR');
+            }
             return $this->offerToBoards($all, $firmwareId, $label);
         }
 
@@ -457,12 +506,19 @@ class FirmwareService
             return $this->fail('No boards in that selection.', 'VALIDATION_ERROR');
         }
 
+        $firmware = $this->firmwareVersionDAO->findById($firmwareId);
+        $typeId = (int) ($firmware['board_type_id'] ?? 0);
         $eligibleIds = [];
         $eligibleBoards = [];
         $already = [];
+        $wrongType = 0;
         foreach ($boards as $board) {
             $id = (int) ($board['id'] ?? 0);
             if ($id <= 0) {
+                continue;
+            }
+            if ($typeId > 0 && (int) ($board['board_type_id'] ?? 0) !== $typeId) {
+                $wrongType++;
                 continue;
             }
             if (FirmwareAlreadyRunning::matches($board['reported_firmware_version'] ?? null, $versionLabel)) {
@@ -474,6 +530,9 @@ class FirmwareService
         }
 
         if ($eligibleIds === []) {
+            if ($wrongType > 0 && $already === []) {
+                return $this->fail('That firmware is for a different board type.', 'VALIDATION_ERROR');
+            }
             if (count($already) === 1) {
                 $board = reset($already);
                 $name = trim((string) ($board['friendly_name'] ?? ''));
@@ -513,7 +572,25 @@ class FirmwareService
         return $this->ok($message);
     }
 
-    private function fleetTree(): array
+    /**
+     * @param array<string, mixed> $version
+     * @return list<array<string, mixed>>
+     */
+    private function boardsMatchingFirmware(array $version): array
+    {
+        $typeId = (int) ($version['board_type_id'] ?? 0);
+        $boards = [];
+        foreach ($this->boardDAO->findAllWithSite() as $board) {
+            if ($typeId > 0 && (int) ($board['board_type_id'] ?? 0) !== $typeId) {
+                continue;
+            }
+            $boards[] = $board;
+        }
+
+        return $boards;
+    }
+
+    private function fleetTree(?int $boardTypeId = null): array
     {
         $tree = [];
         foreach ($this->siteDAO->findAll() as $site) {
@@ -532,6 +609,9 @@ class FirmwareService
         ];
 
         foreach ($this->boardDAO->findAllWithSite() as $board) {
+            if ($boardTypeId !== null && (int) ($board['board_type_id'] ?? 0) !== $boardTypeId) {
+                continue;
+            }
             $siteId = $board['site_id'] === null || $board['site_id'] === '' ? null : (int) $board['site_id'];
             if ($siteId !== null && isset($tree[$siteId])) {
                 $tree[$siteId]['boards'][] = $board;
@@ -540,7 +620,12 @@ class FirmwareService
             }
         }
 
-        $fleetTree = array_values($tree);
+        $fleetTree = [];
+        foreach ($tree as $site) {
+            if ($site['boards'] !== []) {
+                $fleetTree[] = $site;
+            }
+        }
         if ($unassigned['boards'] !== []) {
             $fleetTree[] = $unassigned;
         }

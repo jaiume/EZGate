@@ -29,8 +29,8 @@ final class LoraDownlinkConfigTest extends TestCase
             'lora_only' => false,
             'pulse_duration_ms' => 500,
             'friendly_name' => 'TestBoard Alpha',
-            'wifi_roam_rssi_dbm' => -80,
-            'wifi_roam_hysteresis_dbm' => 8,
+            'wifi_rssi_floor_dbm' => -80,
+            'wifi_rssi_margin_dbm' => 8,
             'wifi_networks' => [['ssid' => 'WifiVentures', 'password' => str_repeat('x', 64)]],
             'lora_site_key_wrapped' => str_repeat('A', 88),
             'internet_host' => '8.8.8.8',
@@ -41,9 +41,9 @@ final class LoraDownlinkConfigTest extends TestCase
         $this->assertLessThan(LoraDownlinkConfig::MAX_BYTES, strlen((string) $json));
         $this->assertSame('2026-09-29 04:06:13', $compact['version']);
         $this->assertFalse($compact['lora_only']);
-        $this->assertSame(500, $compact['pulse_duration_ms']);
+        $this->assertArrayNotHasKey('pulse_duration_ms', $compact);
         $this->assertArrayNotHasKey('friendly_name', $compact);
-        $this->assertArrayNotHasKey('wifi_roam_rssi_dbm', $compact);
+        $this->assertArrayNotHasKey('wifi_rssi_floor_dbm', $compact);
         $this->assertArrayNotHasKey('wifi_networks', $compact);
         $this->assertArrayNotHasKey('lora_site_key_wrapped', $compact);
     }

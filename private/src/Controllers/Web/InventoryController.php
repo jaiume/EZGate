@@ -24,6 +24,7 @@ class InventoryController
         return $this->twig->render($response, 'inventory/index.twig', [
             'boards' => $result['data']['boards'] ?? [],
             'sites' => $result['data']['sites'] ?? [],
+            'board_types' => $result['data']['board_types'] ?? [],
             'open_id' => (int) ($request->getQueryParams()['open'] ?? 0),
             'notice' => $request->getQueryParams()['notice'] ?? null,
             'error' => $request->getQueryParams()['error'] ?? null,

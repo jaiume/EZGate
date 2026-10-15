@@ -15,7 +15,7 @@
             el.setAttribute('title', 'Copied');
             window.setTimeout(function () {
                 el.classList.remove('is-copied');
-                el.setAttribute('title', 'Copy device ID');
+                el.setAttribute('title', el.getAttribute('data-title') || 'Copy virtual device ID');
             }, 1500);
         }).catch(function () {});
     }, true);

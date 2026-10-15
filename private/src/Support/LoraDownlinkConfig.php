@@ -32,7 +32,6 @@ class LoraDownlinkConfig
         $candidates = [
             'version' => self::versionString($config['version'] ?? null),
             'lora_only' => !empty($config['lora_only']),
-            'pulse_duration_ms' => $config['pulse_duration_ms'] ?? null,
         ];
         $out = [];
         foreach ($candidates as $key => $value) {

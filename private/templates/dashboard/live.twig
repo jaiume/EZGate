@@ -27,8 +27,8 @@
                             <button class="accordion-button{% if not boardOpen %} collapsed{% endif %} py-2" type="button" data-bs-toggle="collapse" data-bs-target="#board-{{ board.id }}" aria-expanded="{{ boardOpen ? 'true' : 'false' }}">
                                 <span class="me-auto text-truncate pe-3 d-inline-flex align-items-center">
                                     <span class="fw-semibold">{{ board.friendly_name ?: board.hardware_id }}</span>
+                                    {% if board.board_type_name %}<span class="badge text-bg-light border ms-2">{{ board.board_type_name }}</span>{% endif %}
                                     {% if board.friendly_name %}<span class="text-secondary ms-2"><code>{{ board.hardware_id }}</code></span>{% endif %}
-                                    {% include 'partials/copy_hardware_id.twig' with { hardware_id: board.hardware_id } %}
                                 </span>
                                 {% if board.online %}
                                     <span class="badge text-bg-success me-3">Online</span>
@@ -68,8 +68,6 @@
                                     <dd class="col-sm-9">{{ board.reported_fallback_firmware_version ?: '—' }}</dd>
                                     <dt class="col-sm-3">Uptime</dt>
                                     <dd class="col-sm-9">{{ board.uptime_label ?: '—' }}</dd>
-                                    <dt class="col-sm-3">Relay pulse</dt>
-                                    <dd class="col-sm-9">{{ board.pulse_ms }} ms</dd>
                                     <dt class="col-sm-3">Configuration</dt>
                                     <dd class="col-sm-9">
                                         {% if board.config_pending %}
@@ -152,11 +150,8 @@
                                         </form>
                                     </dd>
                                 </dl>
+                                {% include 'partials/virtual_device_list.twig' with { board: board, return_to: '/' } %}
                                 <div class="d-flex flex-wrap gap-2">
-                                    <form method="post" action="/boards/{{ board.id }}/trigger" class="mb-0" onsubmit="return confirm('Queue an open pulse on this board?');">
-                                        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-                                        <button class="btn btn-sm btn-outline-success" type="submit">Test Trigger</button>
-                                    </form>
                                     <form method="post" action="/boards/{{ board.id }}/reboot" class="mb-0" onsubmit="return confirm('Queue a reboot on this board?');">
                                         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
                                         <input type="hidden" name="return_to" value="/">
@@ -167,12 +162,14 @@
                                         <input type="hidden" name="return_to" value="/">
                                         <button class="btn btn-sm btn-outline-secondary" type="submit"{% if board.config_pending %} disabled{% endif %}>Reprovision</button>
                                     </form>
+                                    {% if board.has_lora %}
                                     <form method="post" action="/boards/{{ board.id }}/lora-only" class="mb-0" onsubmit="return confirm('{% if board.lora_only %}Allow WiFi again on this board?{% else %}Use LoRa only after the board confirms an upstream LoRa path?{% endif %}');">
                                         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
                                         <input type="hidden" name="return_to" value="/">
                                         <input type="hidden" name="lora_only" value="{% if board.lora_only %}0{% else %}1{% endif %}">
                                         <button class="btn btn-sm btn-outline-secondary" type="submit">{% if board.lora_only %}Allow WiFi{% else %}LoRa only{% endif %}</button>
                                     </form>
+                                    {% endif %}
                                     <a class="btn btn-sm btn-outline-primary" href="/boards/{{ board.id }}">Edit</a>
                                 </div>
                                 {% if board.reboot_requested %}

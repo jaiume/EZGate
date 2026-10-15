@@ -2,8 +2,10 @@
 
 declare(strict_types=1);
 
+use App\Controllers\Api\AccesstagController;
 use App\Controllers\Api\FirmwareController as FirmwareApiController;
 use App\Controllers\Api\HeartbeatController;
+use App\Controllers\Api\ReadController;
 use App\Controllers\Api\SetupController;
 use App\Controllers\Api\StatusController;
 use App\Controllers\Api\TriggerController;
@@ -15,6 +17,8 @@ use App\Controllers\Web\HelpController;
 use App\Controllers\Web\InventoryController;
 use App\Controllers\Web\SiteController;
 use App\Controllers\Web\UsbController;
+use App\Controllers\Web\VirtualDeviceController;
+use App\Support\Redirector;
 use App\Middleware\CsrfMiddleware;
 use App\Middleware\WebAuthMiddleware;
 use Slim\App;
@@ -29,6 +33,10 @@ return function (App $app): void {
         $web->get('/', [DashboardController::class, 'index']);
         $web->get('/dashboard/live', [DashboardController::class, 'live']);
         $web->get('/inventory', [InventoryController::class, 'index']);
+        $web->get('/virtual-devices', [VirtualDeviceController::class, 'index']);
+        $web->post('/virtual-devices', [VirtualDeviceController::class, 'save']);
+        $web->post('/virtual-devices/{id:[0-9]+}/delete', [VirtualDeviceController::class, 'delete']);
+        $web->post('/virtual-devices/{id:[0-9]+}/trigger', [VirtualDeviceController::class, 'trigger']);
         $web->post('/inventory/usb', [UsbController::class, 'identify']);
         $web->get('/usb', [UsbController::class, 'index']);
         $web->post('/usb/identify', [UsbController::class, 'identify']);
@@ -56,7 +64,11 @@ return function (App $app): void {
         $web->post('/sites/{id:[0-9]+}/wifi/{wifiId:[0-9]+}/delete', [SiteController::class, 'deleteWifi']);
         $web->post('/sites/{id:[0-9]+}/delete', [SiteController::class, 'delete']);
 
-        $web->get('/firmware', [FirmwareController::class, 'index']);
+        $web->get('/ota', [FirmwareController::class, 'index']);
+        $web->get('/firmware', function ($request, $response) {
+            $query = $request->getUri()->getQuery();
+            return Redirector::to('/ota' . ($query !== '' ? '?' . $query : ''));
+        });
         $web->post('/firmware', [FirmwareController::class, 'create']);
         $web->get('/firmware/{id:[0-9]+}/file', [FirmwareController::class, 'file']);
         $web->get('/firmware/{id:[0-9]+}/usb-manifest', [FirmwareController::class, 'usbManifest']);
@@ -71,8 +83,12 @@ return function (App $app): void {
         $api->get('/setup/sites', [SetupController::class, 'sites']);
         $api->post('/setup/complete', [SetupController::class, 'complete']);
         $api->post('/heartbeat', [HeartbeatController::class, 'heartbeat']);
+        $api->post('/reads', [ReadController::class, 'ingest']);
+        $api->post('/accesstag-list', [AccesstagController::class, 'pull']);
         $api->post('/trigger', [TriggerController::class, 'trigger']);
         $api->get('/status', [StatusController::class, 'status']);
+        $api->get('/accesstag-reader-status', [StatusController::class, 'readerStatus']);
+        $api->post('/accesstags', [AccesstagController::class, 'replace']);
         $api->get('/firmware/download', [FirmwareApiController::class, 'download']);
     });
 };

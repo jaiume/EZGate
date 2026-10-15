@@ -1,14 +1,18 @@
 {% extends 'layouts/app.twig' %}
 {% block title %}{{ board.hardware_id }} — {{ app_name }}{% endblock %}
 {% block content %}
-<p><a href="/">Back to dashboard</a></p>
+<p><a href="{% if board.site_id %}/{% else %}/inventory{% endif %}">Back</a></p>
 <h1 class="h3">{{ board.friendly_name ?: board.hardware_id }}</h1>
-<p class="text-secondary"><code>{{ board.hardware_id }}</code></p>
+<p class="text-secondary">
+    {% if board.board_type_name %}{{ board.board_type_name }} · {% endif %}
+    <code>{{ board.hardware_id }}</code>
+</p>
 <form method="post" action="/boards/{{ board.id }}" class="card card-body shadow-sm mb-4">
     <input type="hidden" name="_csrf" value="{{ csrf_token }}">
     <div class="mb-3">
-        <label class="form-label" for="friendly_name">Friendly name</label>
+        <label class="form-label" for="friendly_name">Board name</label>
         <input class="form-control" id="friendly_name" name="friendly_name" value="{{ board.friendly_name }}">
+        <div class="form-text">This names the physical board. Each virtual device has its own name.</div>
     </div>
     <div class="mb-3">
         <label class="form-label" for="site_id">Site</label>
@@ -19,27 +23,61 @@
             {% endfor %}
         </select>
     </div>
-    <div class="mb-3">
-        <label class="form-label">Relay pulse duration</label>
-        <div class="form-check">
-            <input class="form-check-input" type="radio" name="pulse_mode" id="board_pulse_inherit" value="inherit"{% if board.pulse_inherit %} checked{% endif %}>
-            <label class="form-check-label" for="board_pulse_inherit">
-                {% if board.site_id %}
-                    Use the site pulse (currently {{ board.pulse_inherited }} ms)
-                {% else %}
-                    Use the app default ({{ board.pulse_default }} ms)
-                {% endif %}
-            </label>
-        </div>
-        <div class="form-check">
-            <input class="form-check-input" type="radio" name="pulse_mode" id="board_pulse_custom" value="custom"{% if not board.pulse_inherit %} checked{% endif %}>
-            <label class="form-check-label" for="board_pulse_custom">Custom for this board</label>
-        </div>
-        <input class="form-control mt-2" id="pulse_duration_ms" name="pulse_duration_ms" type="number" min="50" max="10000" value="{{ board.pulse_duration_ms ?: board.pulse_resolved }}">
-        <div class="form-text">The portal sends the resolved value (currently {{ board.pulse_resolved }} ms) with other board config on the next heartbeat.</div>
-    </div>
-    <button class="btn btn-primary" type="submit">Save</button>
+    <button class="btn btn-primary" type="submit">Save board</button>
 </form>
+
+<div class="card card-body shadow-sm mb-4" id="virtual-devices">
+    <h2 class="h5">Virtual devices</h2>
+    <p class="text-secondary">EntryZen addresses a virtual device. Assign relays, and a Wiegand reader when this board has one. Pulse duration is per relay.</p>
+    {% for device in board.virtual_devices %}
+    <div class="border rounded p-3 mb-3" id="device-{{ device.id }}">
+        <div class="d-flex justify-content-between align-items-start gap-2">
+            <div>
+                <div class="fw-semibold">{{ device.friendly_name ?: 'Unnamed' }}</div>
+                <div class="small">
+                    <code>{{ device.public_id }}</code>
+                    {% include 'partials/copy_hardware_id.twig' with { value: device.public_id } %}
+                </div>
+            </div>
+            <div class="d-flex gap-2">
+                {% if device.relays %}
+                <form method="post" action="/virtual-devices/{{ device.id }}/trigger" onsubmit="return confirm('Pulse this virtual device?');">
+                    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="return_to" value="/boards/{{ board.id }}">
+                    <button class="btn btn-sm btn-outline-success" type="submit">Test Trigger</button>
+                </form>
+                {% endif %}
+                <form method="post" action="/virtual-devices/{{ device.id }}/delete" onsubmit="return confirm('Remove this virtual device?');">
+                    <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+                    <input type="hidden" name="return_to" value="/boards/{{ board.id }}">
+                    <button class="btn btn-sm btn-outline-danger" type="submit">Remove</button>
+                </form>
+            </div>
+        </div>
+        <form method="post" action="/virtual-devices" class="mt-3">
+            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+            <input type="hidden" name="return_to" value="/boards/{{ board.id }}">
+            <input type="hidden" name="id" value="{{ device.id }}">
+            <input type="hidden" name="board_id" value="{{ board.id }}">
+            {% include 'virtual_devices/_fields.twig' with { board: board, device: device, pulse_default: board.pulse_default } %}
+            <button class="btn btn-sm btn-primary" type="submit">Save virtual device</button>
+        </form>
+    </div>
+    {% else %}
+    <p class="text-secondary">No virtual devices yet.</p>
+    {% endfor %}
+
+    {% if board.can_add_device %}
+    <h3 class="h6">New virtual device</h3>
+    <form method="post" action="/virtual-devices">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="/boards/{{ board.id }}">
+        <input type="hidden" name="board_id" value="{{ board.id }}">
+        {% include 'virtual_devices/_fields.twig' with { board: board, device: null, pulse_default: board.pulse_default } %}
+        <button class="btn btn-sm btn-outline-primary" type="submit">Create</button>
+    </form>
+    {% endif %}
+</div>
 <div class="card card-body shadow-sm mb-4">
     <h2 class="h5">Firmware</h2>
     <p class="mb-0">

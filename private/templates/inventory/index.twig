@@ -6,7 +6,7 @@
         <h1 class="h3 mb-0">Inventory</h1>
         <button class="btn btn-primary" type="button" data-bs-toggle="modal" data-bs-target="#addBoardModal">+ Board</button>
     </div>
-    <p class="text-secondary">Unassigned boards only. Flash and keys are on the <a href="/usb">USB</a> page, including boards already on a site. After a board joins a site it also appears on the Dashboard.</p>
+    <p class="text-secondary">Unassigned boards only. Each board lists its virtual devices. Flash and keys are on the <a href="/usb">USB</a> page, including boards already on a site. After a board joins a site it also appears on the Dashboard.</p>
 
     {% if boards %}
     <div class="accordion" id="inventoryList">
@@ -17,8 +17,8 @@
                 <button class="accordion-button{% if not isOpen %} collapsed{% endif %} py-2" type="button" data-bs-toggle="collapse" data-bs-target="#board-{{ board.id }}" aria-expanded="{{ isOpen ? 'true' : 'false' }}">
                     <span class="me-auto text-truncate pe-3 d-inline-flex align-items-center">
                         <span class="fw-semibold">{{ board.friendly_name ?: board.hardware_id }}</span>
+                        {% if board.board_type_name %}<span class="badge text-bg-light border ms-2">{{ board.board_type_name }}</span>{% endif %}
                         {% if board.friendly_name %}<span class="text-secondary ms-2"><code>{{ board.hardware_id }}</code></span>{% endif %}
-                        {% include 'partials/copy_hardware_id.twig' with { hardware_id: board.hardware_id } %}
                     </span>
                     {% if board.online %}
                         <span class="badge text-bg-success me-3">Online</span>
@@ -59,8 +59,6 @@
                         <dd class="col-sm-9">{{ board.reported_fallback_firmware_version ?: '—' }}</dd>
                         <dt class="col-sm-3">Uptime</dt>
                         <dd class="col-sm-9">{{ board.uptime_label ?: '—' }}</dd>
-                        <dt class="col-sm-3">Relay pulse</dt>
-                        <dd class="col-sm-9">{{ board.pulse_ms }} ms</dd>
                         <dt class="col-sm-3">Configuration</dt>
                         <dd class="col-sm-9">
                             {% if board.config_pending %}
@@ -70,16 +68,13 @@
                             {% endif %}
                         </dd>
                         <dt class="col-sm-3">Site</dt>
-                        <dd class="col-sm-9">{{ board.site_name ?: 'Unassigned' }}</dd>
+                        <dd class="col-sm-9">{{ board.site_name ?: 'Unassigned' }}                        </dd>
                     </dl>
+                    {% include 'partials/virtual_device_list.twig' with { board: board, return_to: '/inventory' } %}
                     <div class="d-flex flex-wrap gap-2 mb-3">
-                        <form method="post" action="/boards/{{ board.id }}/trigger" class="mb-0" onsubmit="return confirm('Queue an open pulse on this board?');">
-                            <input type="hidden" name="_csrf" value="{{ csrf_token }}">
-                            <input type="hidden" name="return_to" value="/inventory">
-                            <button class="btn btn-sm btn-outline-success" type="submit">Test Trigger</button>
-                        </form>
+                        <a class="btn btn-sm btn-outline-primary" href="/boards/{{ board.id }}">Edit</a>
                         <a class="btn btn-sm btn-outline-primary" href="/usb">USB tools</a>
-                        <form method="post" action="/boards/{{ board.id }}/delete" class="mb-0" onsubmit="return confirm('Delete {{ (board.friendly_name ?: board.hardware_id)|e('js') }} from inventory? This cannot be undone.');">
+                        <form method="post" action="/boards/{{ board.id }}/delete" class="mb-0" onsubmit="return confirm('Delete {{ (board.friendly_name ?: board.hardware_id)|e('js') }} from inventory? Its hardware id is removed. Connecting it again will ask for the board type. This cannot be undone.');">
                             <input type="hidden" name="_csrf" value="{{ csrf_token }}">
                             <input type="hidden" name="return_to" value="/inventory">
                             <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
@@ -122,7 +117,14 @@
             </div>
             <div class="modal-body">
                 <label class="form-label" for="hardware_id">Board identifier</label>
-                <input class="form-control" id="hardware_id" name="hardware_id" required placeholder="Board unique id">
+                <input class="form-control mb-3" id="hardware_id" name="hardware_id" required placeholder="Board unique id">
+                <label class="form-label" for="inventory_board_type_id">Board type</label>
+                <select class="form-select" id="inventory_board_type_id" name="board_type_id" required>
+                    <option value="">Choose a board type</option>
+                    {% for type in board_types %}
+                        <option value="{{ type.id }}">{{ type.name }}</option>
+                    {% endfor %}
+                </select>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>

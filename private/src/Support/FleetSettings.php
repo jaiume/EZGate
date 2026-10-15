@@ -53,16 +53,14 @@ class FleetSettings
             'ntp_server_2' => self::ntpServer2(),
             'ota_chunk_bytes' => self::otaChunkBytes(),
             'ota_lora_chunk_bytes' => self::otaLoraChunkBytes(),
-            'wifi_roam_rssi_dbm' => self::signedIntKnobPrefer(
-                'wifi.roam_rssi_dbm',
-                'app.wifi_roam_rssi_dbm',
+            'wifi_rssi_floor_dbm' => self::signedIntKnobPreferChain(
+                ['wifi.rssi_floor_dbm', 'wifi.roam_rssi_dbm', 'app.wifi_roam_rssi_dbm'],
                 -80,
                 -100,
                 -50
             ),
-            'wifi_roam_hysteresis_dbm' => self::intKnobPrefer(
-                'wifi.roam_hysteresis_dbm',
-                'app.wifi_roam_hysteresis_dbm',
+            'wifi_rssi_margin_dbm' => self::signedIntKnobPreferChain(
+                ['wifi.rssi_margin_dbm', 'wifi.roam_hysteresis_dbm', 'app.wifi_roam_hysteresis_dbm'],
                 8,
                 0,
                 30
@@ -76,6 +74,7 @@ class FleetSettings
     public static function loraKnobs(): array
     {
         return [
+            'lora_rssi_floor_dbm' => self::signedIntKnob('lora.rssi_floor_dbm', -120, -140, -40),
             'lora_frequency_hz' => self::intKnob('lora.frequency_hz', 915000000, 100000000, 1000000000),
             'isolation_misses' => self::intKnob('lora.isolation_misses', 3, 1, 20),
             'lora_hop_limit' => self::intKnob('lora.hop_limit', 3, 1, 8),
@@ -84,6 +83,7 @@ class FleetSettings
             'lora_discovery_delay_max_ms' => self::intKnob('lora.discovery_delay_max_ms', 250, 0, 5000),
             'lora_stagger_jitter_ms' => self::intKnob('lora.stagger_jitter_ms', 200, 0, 5000),
             'lora_route_expiry_intervals' => self::intKnob('lora.route_expiry_intervals', 3, 1, 20),
+            'lora_beacon_interval_multiple' => self::intKnob('lora.beacon_interval_multiple', 5, 1, 10),
             'ota_max_per_gateway' => self::intKnob('lora.ota_max_per_gateway', 1, 1, 8),
             'ota_airtime_budget_ms' => self::intKnob('lora.ota_airtime_budget_ms', 400, 0, 5000),
             'lora_log_radio' => self::boolKnob('lora.log_radio', true),
@@ -163,12 +163,28 @@ class FleetSettings
         int $min,
         int $max
     ): int {
-        $raw = ConfigService::get($preferred, null);
-        if ($raw === null || $raw === '') {
-            return self::signedIntKnob($legacy, $fallback, $min, $max);
+        return self::signedIntKnobPreferChain([$preferred, $legacy], $fallback, $min, $max);
+    }
+
+    /**
+     * @param list<string> $keys
+     */
+    private static function signedIntKnobPreferChain(
+        array $keys,
+        int $fallback,
+        int $min,
+        int $max
+    ): int {
+        foreach ($keys as $key) {
+            $raw = ConfigService::get($key, null);
+            if ($raw === null || $raw === '') {
+                continue;
+            }
+
+            return max($min, min($max, (int) $raw));
         }
 
-        return max($min, min($max, (int) $raw));
+        return max($min, min($max, $fallback));
     }
 
     private static function hostPrefer(string $preferred, string $legacy, string $fallback): string

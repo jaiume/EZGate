@@ -10,12 +10,13 @@ internet_host = "8.8.8.8"
 ntp_server_1 = "pool.ntp.org"
 ntp_server_2 = "time.google.com"
 ota_chunk_bytes = 51200
-roam_rssi_dbm = -80
-roam_hysteresis_dbm = 8
+rssi_floor_dbm = -80
+rssi_margin_dbm = 8
 
 [lora]
 heartbeat_interval_seconds = 5
 ota_chunk_bytes = 192
+rssi_floor_dbm = -120
 frequency_hz = 915000000
 isolation_misses = 3
 hop_limit = 3
@@ -46,6 +47,11 @@ api_key = change-this-api-key
 
 [logging]
 path = var/logs/app.log
+
+[entryzen]
+reads_url =
+api_key =
+timeout = 5
 
 [security]
 ; CSRF is required for operator form posts

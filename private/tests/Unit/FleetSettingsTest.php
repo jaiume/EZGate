@@ -35,8 +35,54 @@ final class FleetSettingsTest extends TestCase
         $this->assertSame(1, $cfg['ota_max_per_gateway']);
         $this->assertSame(400, $cfg['ota_airtime_budget_ms']);
         $this->assertTrue($cfg['lora_log_radio']);
-        $this->assertSame(-80, $cfg['wifi_roam_rssi_dbm']);
-        $this->assertSame(8, $cfg['wifi_roam_hysteresis_dbm']);
+        $this->assertSame(-80, $cfg['wifi_rssi_floor_dbm']);
+        $this->assertSame(8, $cfg['wifi_rssi_margin_dbm']);
+        $this->assertSame(-120, $cfg['lora_rssi_floor_dbm']);
+        $this->assertArrayNotHasKey('wifi_roam_rssi_dbm', $cfg);
+        $this->assertArrayNotHasKey('wifi_roam_hysteresis_dbm', $cfg);
+    }
+
+    public function testRssiFloorFallsBackToRoamKeys(): void
+    {
+        $this->overrideConfig([
+            'wifi' => [
+                'roam_rssi_dbm' => -75,
+                'roam_hysteresis_dbm' => 6,
+            ],
+            'lora' => [],
+        ]);
+        $cfg = FleetSettings::forBoardConfig();
+        $this->assertSame(-75, $cfg['wifi_rssi_floor_dbm']);
+        $this->assertSame(6, $cfg['wifi_rssi_margin_dbm']);
+        $this->assertSame(-120, $cfg['lora_rssi_floor_dbm']);
+    }
+
+    public function testRssiMarginAllowsZero(): void
+    {
+        $this->overrideConfig([
+            'wifi' => [
+                'rssi_floor_dbm' => -80,
+                'rssi_margin_dbm' => 0,
+            ],
+            'lora' => [
+                'rssi_floor_dbm' => -110,
+            ],
+        ]);
+        $cfg = FleetSettings::forBoardConfig();
+        $this->assertSame(-80, $cfg['wifi_rssi_floor_dbm']);
+        $this->assertSame(0, $cfg['wifi_rssi_margin_dbm']);
+        $this->assertSame(-110, $cfg['lora_rssi_floor_dbm']);
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private function overrideConfig(array $config): void
+    {
+        $ref = new \ReflectionClass(ConfigService::class);
+        $prop = $ref->getProperty('config');
+        $prop->setAccessible(true);
+        $prop->setValue(null, $config);
     }
 
     public function testReadsOtaChunkSizesFromIni(): void

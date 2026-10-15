@@ -5,6 +5,7 @@
     id="usb-page"
     data-csrf="{{ csrf_token }}"
     data-usb='{"nvsAddress":36864,"nvsSize":20480,"appAddress":65536,"flashSize":"8MB","flashMode":"qio","flashFreq":"80m"}'
+    data-sites="{{ sites|json_encode|e('html_attr') }}"
 >
     <h1 class="h3 mb-3">USB</h1>
     <p class="text-secondary">Connect opens the COM port. Choose <strong>CDC</strong> for serial commands while firmware is running or booting, or <strong>Download</strong> to flash. CDC sends <code>EZGUSB</code>; the board answers once and then waits for commands. Nothing here reboots the board; press RST when you want it to boot. Setup Wi‑Fi is <code>EZGate-</code> plus the last four of the board id, password <code>ezgate-setup</code>.</p>
@@ -49,7 +50,7 @@
                 <label class="form-label" for="load_firmware_id">Firmware</label>
                 <select class="form-select" id="load_firmware_id" name="firmware_id" required>
                     {% for version in firmware_versions %}
-                        <option value="{{ version.id }}">{{ version.version }}</option>
+                        <option value="{{ version.id }}" data-board-type="{{ version.board_type_id }}">{{ version.version }}{% if version.board_type_name %} · {{ version.board_type_name }}{% endif %}</option>
                     {% endfor %}
                 </select>
                 {% else %}
@@ -63,7 +64,33 @@
         </form>
     </div>
 </div>
+
+<div class="modal fade" id="boardTypeModal" tabindex="-1" aria-labelledby="boardTypeModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <form id="boardTypeForm" class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title h5" id="boardTypeModalLabel">Board type</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary">This hardware id is not saved yet. Choose the board type to add it to inventory.</p>
+                <p class="mb-3"><code id="boardTypeHardwareId"></code></p>
+                <label class="form-label" for="board_type_choice">Board type</label>
+                <select class="form-select" id="board_type_choice" required>
+                    <option value="">Choose a board type</option>
+                    {% for type in board_types %}
+                        <option value="{{ type.name }}">{{ type.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary" type="submit">Save board</button>
+            </div>
+        </form>
+    </div>
+</div>
 {% endblock %}
 {% block scripts %}
-<script type="module" src="/js/usb.js?v=12"></script>
+<script type="module" src="/js/usb.js?v=18"></script>
 {% endblock %}

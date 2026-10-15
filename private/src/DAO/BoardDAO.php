@@ -9,10 +9,14 @@ class BoardDAO extends AbstractDAO
     public function findAllWithSite(): array
     {
         $stmt = $this->db->query(
-            'SELECT b.*, s.name AS site_name, s.pulse_duration_ms AS site_pulse_duration_ms, tf.version AS target_firmware_version, tf.file_size AS target_firmware_size
+            'SELECT b.*, s.name AS site_name, s.pulse_duration_ms AS site_pulse_duration_ms, tf.version AS target_firmware_version, tf.file_size AS target_firmware_size,
+                    bt.name AS board_type_name, bt.relay_count, bt.wiegand_count, bt.has_lora, bt.has_wifi, bt.has_ethernet,
+                    (SELECT vd.friendly_name FROM virtual_devices vd WHERE vd.board_id = b.id ORDER BY vd.id LIMIT 1) AS primary_virtual_name,
+                    (SELECT r.pulse_duration_ms FROM virtual_device_relays r JOIN virtual_devices vd ON vd.id = r.virtual_device_id WHERE vd.board_id = b.id ORDER BY r.relay_number LIMIT 1) AS primary_relay_pulse_ms
              FROM boards b
              LEFT JOIN sites s ON s.id = b.site_id
              LEFT JOIN firmware_versions tf ON tf.id = b.target_firmware_version_id
+             LEFT JOIN board_types bt ON bt.id = b.board_type_id
              ORDER BY b.hardware_id ASC'
         );
         return $stmt === false ? [] : $stmt->fetchAll();
@@ -21,10 +25,14 @@ class BoardDAO extends AbstractDAO
     public function findById(int $id): ?array
     {
         $stmt = $this->db->prepare(
-            'SELECT b.*, s.name AS site_name, s.pulse_duration_ms AS site_pulse_duration_ms, tf.version AS target_firmware_version, tf.file_size AS target_firmware_size
+            'SELECT b.*, s.name AS site_name, s.pulse_duration_ms AS site_pulse_duration_ms, tf.version AS target_firmware_version, tf.file_size AS target_firmware_size,
+                    bt.name AS board_type_name, bt.relay_count, bt.wiegand_count, bt.has_lora, bt.has_wifi, bt.has_ethernet,
+                    (SELECT vd.friendly_name FROM virtual_devices vd WHERE vd.board_id = b.id ORDER BY vd.id LIMIT 1) AS primary_virtual_name,
+                    (SELECT r.pulse_duration_ms FROM virtual_device_relays r JOIN virtual_devices vd ON vd.id = r.virtual_device_id WHERE vd.board_id = b.id ORDER BY r.relay_number LIMIT 1) AS primary_relay_pulse_ms
              FROM boards b
              LEFT JOIN sites s ON s.id = b.site_id
              LEFT JOIN firmware_versions tf ON tf.id = b.target_firmware_version_id
+             LEFT JOIN board_types bt ON bt.id = b.board_type_id
              WHERE b.id = ?
              LIMIT 1'
         );
@@ -36,10 +44,14 @@ class BoardDAO extends AbstractDAO
     public function findByHardwareId(string $hardwareId): ?array
     {
         $stmt = $this->db->prepare(
-            'SELECT b.*, s.name AS site_name, s.pulse_duration_ms AS site_pulse_duration_ms, tf.version AS target_firmware_version, tf.file_size AS target_firmware_size
+            'SELECT b.*, s.name AS site_name, s.pulse_duration_ms AS site_pulse_duration_ms, tf.version AS target_firmware_version, tf.file_size AS target_firmware_size,
+                    bt.name AS board_type_name, bt.relay_count, bt.wiegand_count, bt.has_lora, bt.has_wifi, bt.has_ethernet,
+                    (SELECT vd.friendly_name FROM virtual_devices vd WHERE vd.board_id = b.id ORDER BY vd.id LIMIT 1) AS primary_virtual_name,
+                    (SELECT r.pulse_duration_ms FROM virtual_device_relays r JOIN virtual_devices vd ON vd.id = r.virtual_device_id WHERE vd.board_id = b.id ORDER BY r.relay_number LIMIT 1) AS primary_relay_pulse_ms
              FROM boards b
              LEFT JOIN sites s ON s.id = b.site_id
              LEFT JOIN firmware_versions tf ON tf.id = b.target_firmware_version_id
+             LEFT JOIN board_types bt ON bt.id = b.board_type_id
              WHERE b.hardware_id = ?
              LIMIT 1'
         );
@@ -48,14 +60,22 @@ class BoardDAO extends AbstractDAO
         return $row ?: null;
     }
 
-    public function create(string $hardwareId, ?string $friendlyName = null, ?int $siteId = null): int
+    public function create(string $hardwareId, ?string $friendlyName = null, ?int $siteId = null, ?int $boardTypeId = null): int
     {
         $stmt = $this->db->prepare(
-            'INSERT INTO boards (hardware_id, friendly_name, site_id, config_updated_at)
-             VALUES (?, ?, ?, UTC_TIMESTAMP())'
+            'INSERT INTO boards (hardware_id, friendly_name, site_id, board_type_id, config_updated_at)
+             VALUES (?, ?, ?, COALESCE(?, (SELECT id FROM board_types WHERE name = ? LIMIT 1)), UTC_TIMESTAMP())'
         );
-        $stmt->execute([$hardwareId, $friendlyName, $siteId]);
+        $stmt->execute([$hardwareId, $friendlyName, $siteId, $boardTypeId, \App\Support\BoardTypes::HELTEC]);
         return (int) $this->db->lastInsertId();
+    }
+
+    public function setBoardType(int $id, int $boardTypeId): void
+    {
+        $stmt = $this->db->prepare(
+            'UPDATE boards SET board_type_id = ?, updated_at = UTC_TIMESTAMP() WHERE id = ?'
+        );
+        $stmt->execute([$boardTypeId, $id]);
     }
 
     public function update(int $id, ?string $friendlyName, ?int $siteId, ?int $pulseDurationMs): void

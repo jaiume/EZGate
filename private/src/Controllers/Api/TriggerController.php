@@ -19,7 +19,7 @@ class TriggerController
     {
         $body = (array) $request->getParsedBody();
         $token = $this->extractToken($request, $body);
-        $identifier = (string) ($body['identifier'] ?? $body['hardware_id'] ?? '');
+        $identifier = (string) ($body['identifier'] ?? '');
         $result = $this->triggerService->trigger($token, $identifier);
         return JsonResponder::fromService($result);
     }

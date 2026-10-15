@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\DAO\BoardDAO;
+use App\DAO\BoardTypeDAO;
 use App\DAO\FirmwareVersionDAO;
 use App\DAO\OpenCommandDAO;
 use App\DAO\SiteDAO;
+use App\DAO\VirtualDeviceDAO;
 use App\DAO\WifiNetworkDAO;
 use App\Support\BoardPresenter;
 use App\Support\FleetSettings;
@@ -26,7 +28,10 @@ class BoardService
         private OpenCommandDAO $openCommandDAO,
         private FirmwareVersionDAO $firmwareVersionDAO,
         private FirmwareService $firmwareService,
-        private WifiNetworkDAO $wifiNetworkDAO
+        private WifiNetworkDAO $wifiNetworkDAO,
+        private BoardTypeDAO $boardTypeDAO,
+        private VirtualDeviceDAO $virtualDeviceDAO,
+        private VirtualDeviceService $virtualDeviceService
     ) {
     }
 
@@ -42,7 +47,10 @@ class BoardService
      */
     public function present(array $board, ?string $cutoff = null): array
     {
-        return BoardPresenter::forList($board, $cutoff ?? $this->isolationCutoff());
+        $presented = BoardPresenter::forList($board, $cutoff ?? $this->isolationCutoff());
+        $presented['virtual_devices'] = $this->virtualDeviceService->summariesForBoard((int) $presented['id']);
+
+        return $presented;
     }
 
     public function listBoards(): array
@@ -70,6 +78,11 @@ class BoardService
 
         $board['uptime_label'] = Uptime::label($board['last_uptime_seconds'] ?? null);
         $board = $this->presentBoardPulse($board);
+        $editor = $this->virtualDeviceService->editorForBoard($board);
+        $board['virtual_devices'] = $editor['virtual_devices'];
+        $board['taken_relays'] = $editor['taken_relays'];
+        $board['taken_readers'] = $editor['taken_readers'];
+        $board['can_add_device'] = $editor['can_add_device'];
 
         $sites = [];
         foreach ($this->siteDAO->findAll() as $site) {
@@ -89,11 +102,14 @@ class BoardService
         ];
     }
 
-    public function addToInventory(string $hardwareId): array
+    public function addToInventory(string $hardwareId, int $boardTypeId): array
     {
         $hardwareId = trim($hardwareId);
         if ($hardwareId === '') {
             return $this->fail('Board identifier is required.', 'VALIDATION_ERROR');
+        }
+        if ($boardTypeId <= 0 || $this->boardTypeDAO->findById($boardTypeId) === null) {
+            return $this->fail('Choose a board type.', 'VALIDATION_ERROR');
         }
 
         $existing = $this->boardDAO->findByHardwareId($hardwareId);
@@ -101,7 +117,8 @@ class BoardService
             return $this->fail('That board is already in inventory.', 'VALIDATION_ERROR');
         }
 
-        $id = $this->boardDAO->create($hardwareId);
+        $id = $this->boardDAO->create($hardwareId, null, null, $boardTypeId);
+        $this->virtualDeviceService->ensureForBoard($id);
         return [
             'success' => true,
             'message' => 'Board added to inventory.',
@@ -126,7 +143,7 @@ class BoardService
             return $this->fail('Site not found.', 'NOT_FOUND');
         }
 
-        $this->boardDAO->update($id, $name, $siteId, $pulseDurationMs);
+        $this->boardDAO->update($id, $name, $siteId, null);
 
         return [
             'success' => true,
@@ -143,7 +160,18 @@ class BoardService
             return $this->fail('Board not found.', 'NOT_FOUND');
         }
 
-        $queued = $this->openCommandDAO->queue($id, FleetSettings::openCommandTtlSecondsForBoard($board));
+        if ((int) ($board['relay_count'] ?? 1) > 1) {
+            return $this->fail('Trigger a virtual device on this board.', 'VALIDATION_ERROR');
+        }
+        $devices = $this->virtualDeviceDAO->findByBoardId($id);
+        if ($devices === [] || $this->virtualDeviceDAO->relays((int) $devices[0]['id']) === []) {
+            return $this->fail('Virtual device has no relays.', 'VALIDATION_ERROR');
+        }
+        $queued = $this->openCommandDAO->queue(
+            $id,
+            (int) $devices[0]['id'],
+            FleetSettings::openCommandTtlSecondsForBoard($board)
+        );
         $label = $board['friendly_name'] ?: $board['hardware_id'];
         $message = !empty($queued['created'])
             ? 'Open command queued for ' . $label . '. It will pulse on the next heartbeat.'
@@ -286,6 +314,7 @@ class BoardService
         }
 
         $id = $this->boardDAO->create($hardwareId);
+        $this->virtualDeviceService->ensureForBoard($id);
         $created = $this->boardDAO->findById($id);
         return $created ?? ['id' => $id, 'hardware_id' => $hardwareId];
     }
@@ -312,6 +341,7 @@ class BoardService
             'data' => [
                 'boards' => $boards,
                 'sites' => $this->siteDAO->findAll(),
+                'board_types' => $this->boardTypeDAO->findAll(),
                 'firmware_versions' => $versions,
             ],
             'error' => null,
@@ -325,49 +355,82 @@ class BoardService
             'message' => 'USB tools loaded.',
             'data' => [
                 'firmware_versions' => $this->usbFirmwareOptions(),
+                'board_types' => $this->boardTypeDAO->findAll(),
+                'sites' => array_map(static function (array $site): array {
+                    return [
+                        'id' => (int) $site['id'],
+                        'name' => (string) $site['name'],
+                    ];
+                }, $this->siteDAO->findAll()),
             ],
             'error' => null,
         ];
     }
 
     /**
-     * @return list<array{id: int, version: string}>
+     * @return list<array{id: int, version: string, board_type_id: int, board_type_name: string}>
      */
     private function usbFirmwareOptions(): array
     {
+        $typeNames = [];
+        foreach ($this->boardTypeDAO->findAll() as $type) {
+            $typeNames[(int) $type['id']] = (string) $type['name'];
+        }
         $versions = [];
         foreach ($this->firmwareVersionDAO->findAll() as $version) {
             if (!$this->firmwareService->hasUsbFactory($version)) {
                 continue;
             }
+            $typeId = (int) ($version['board_type_id'] ?? 0);
             $versions[] = [
                 'id' => (int) $version['id'],
                 'version' => (string) $version['version'],
+                'board_type_id' => $typeId,
+                'board_type_name' => $typeNames[$typeId] ?? '',
             ];
         }
 
         return $versions;
     }
 
-    public function identifyUsb(string $hardwareId): array
+    public function identifyUsb(string $hardwareId, ?string $boardType = null): array
     {
         $candidates = HardwareId::candidates($hardwareId);
         if ($candidates === []) {
             return $this->fail('That USB MAC is not a board identifier.', 'VALIDATION_ERROR');
+        }
+        $typeId = null;
+        $reportedType = $boardType !== null ? trim($boardType) : '';
+        if ($reportedType !== '') {
+            $type = $this->boardTypeDAO->findByName($reportedType);
+            if ($type === null) {
+                return $this->fail('That board type is not known.', 'VALIDATION_ERROR');
+            }
+            $typeId = (int) $type['id'];
         }
 
         foreach ($candidates as $candidate) {
             $existing = $this->boardDAO->findByHardwareId($candidate);
             if ($existing !== null) {
                 $this->ensureCredential((int) $existing['id']);
+                $this->virtualDeviceService->ensureForBoard((int) $existing['id']);
                 $existing = $this->boardDAO->findById((int) $existing['id']) ?? $existing;
                 return $this->okUsbBoard($existing, false, 'Matched ' . $candidate . ' on USB.');
             }
         }
 
         $storeId = HardwareId::fromUsbMac($hardwareId) ?? $candidates[0];
-        $id = $this->boardDAO->create($storeId);
+        if ($typeId === null) {
+            return [
+                'success' => false,
+                'message' => 'Choose a board type for ' . $storeId . '.',
+                'data' => ['hardware_id' => $storeId],
+                'error' => ['code' => 'BOARD_TYPE_REQUIRED', 'details' => []],
+            ];
+        }
+        $id = $this->boardDAO->create($storeId, null, null, $typeId);
         $this->ensureCredential($id);
+        $this->virtualDeviceService->ensureForBoard($id);
         $created = $this->boardDAO->findById($id);
         if ($created === null) {
             return $this->fail('Unable to add the board to inventory.', 'INTERNAL_ERROR');
@@ -412,7 +475,7 @@ class BoardService
 
         return [
             'success' => true,
-            'message' => $label . ' was deleted from inventory.',
+            'message' => $label . ' was deleted. Its hardware id was removed, so the next USB connection will ask for the board type.',
             'data' => ['id' => $id],
             'error' => null,
         ];
@@ -569,7 +632,11 @@ class BoardService
      */
     private function presentBoardPulse(array $board): array
     {
-        $boardOverride = PulseDuration::stored($board['pulse_duration_ms'] ?? null);
+        $boardOverride = PulseDuration::stored(
+            (int) ($board['relay_count'] ?? 1) === 1
+                ? ($board['primary_relay_pulse_ms'] ?? null)
+                : ($board['pulse_duration_ms'] ?? null)
+        );
         $siteOverride = PulseDuration::stored($board['site_pulse_duration_ms'] ?? null);
         $board['pulse_inherit'] = $boardOverride === null;
         $board['pulse_inherited'] = PulseDuration::resolve(null, $siteOverride);

@@ -29,7 +29,10 @@ class BoardController
     public function create(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
         $body = (array) $request->getParsedBody();
-        $result = $this->boardService->addToInventory((string) ($body['hardware_id'] ?? ''));
+        $result = $this->boardService->addToInventory(
+            (string) ($body['hardware_id'] ?? ''),
+            (int) ($body['board_type_id'] ?? 0)
+        );
         $returnTo = $this->safeReturn((string) ($body['return_to'] ?? ''), '/');
         if (!$result['success']) {
             $sep = str_contains($returnTo, '?') ? '&' : '?';

@@ -1,23 +1,16 @@
 # EZGate
 
-EZGate manages a fleet of smart gate relays and gives consumers connectivity to them. Every relay is a [Heltec Wireless Stick](https://wiki.heltec.org/docs/devices/open-source-hardware/esp32-series/lora-32/wireless-stick/) with a relay module tied to one GPIO pin. Operators manage the fleet through a portal. This project includes writing the firmware, and every board runs that same firmware.
+EZGate manages a fleet of gate boards and gives consumers connectivity to the virtual devices on those boards. A virtual device is what EntryZen addresses. It may own relays, one Wiegand reader, or both. Two board types are built in: Heltec Wireless Stick Lite V3 (one relay, Wi-Fi, LoRa) and Kincony KC868-A8 (eight relays, two Wiegand readers, Wi-Fi, Ethernet). Each type has its own firmware image. Operators manage the fleet through the portal.
 
 The board provides the radios and the sensor input. The relay module provides the dry-contact output. The firmware provides portal connectivity, LoRa routing, gateway mode, and fallback when WiFi or its internet connectivity is lost.
 
 ## Boards
 
-Each board determines its own unique identifier. Its friendly name is set during initial setup.
+Each physical board has a type, a hardware id, and its own name. Its virtual devices are listed under it on the dashboard and in inventory, including a one-relay board. An operator adds, changes, and removes those devices on the board’s edit page. A relay and a reader each belong to at most one virtual device. Pulse duration is stored per relay. A null pulse inherits the site pulse, then the app default (500 ms).
 
-An open command arrives over WiFi or LoRa. The firmware pulses the relay module, through its GPIO pin, for a configurable duration into a low-voltage gate controller input. The default duration is 500 ms.
+An open command is queued for one virtual device. The heartbeat delivers it on that device, and the board reports `completed_command_id` and `received_command_id` on that same device after the relays turn on.
 
-An external gate-state sensor is optional. When one is connected, the board reads open/closed feedback. The board includes gate state and status in the heartbeat it sends to the portal.
-
-On the board:
-
-- One green status LED. Its blink pattern shows the operating mode.
-- Config resets WiFi.
-- Boot is used to flash firmware.
-- Reset reboots the board.
+The Heltec board can include gate state in its heartbeat. The A8 runs as an offline controller after boot: its accesstag lists and virtual-device map are on SPIFFS and survive power loss and field OTA. A USB firmware load wipes NVS and SPIFFS. Wiegand checks and relay pulses keep running while the A8 setup AP is up.
 
 ## Sites
 
@@ -68,4 +61,4 @@ The portal is how operators run the fleet:
 
 ## External API
 
-The portal accepts external API calls that trigger a board or read whether that board is online. See [consumer-integration.md](consumer-integration.md).
+The portal accepts external API calls that trigger a virtual device, replace an autonomous accesstag list, read relay availability, and read whether a Wiegand device is autonomous or reader-only. The board reports reads to the portal. The portal posts each device's reads to the destination from its latest accesstag push, or to `[entryzen] reads_url` when that device has never had a destination. See [consumer-integration.md](consumer-integration.md).

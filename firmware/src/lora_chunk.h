@@ -6,6 +6,7 @@
 const uint8_t LORA_CHUNK_KIND_CONFIG = 1;
 const uint8_t LORA_CHUNK_KIND_FIRMWARE = 2;
 const uint8_t LORA_CHUNK_KIND_UPLINK = 3;
+const uint8_t LORA_CHUNK_KIND_LIST = 4;
 const uint8_t LORA_CHUNK_FLAG_LAST = 0x01;
 const uint8_t LORA_CHUNK_HDR_BYTES = 16;
 const uint16_t LORA_CHUNK_MAX_PLAIN = 215;

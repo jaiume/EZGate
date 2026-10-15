@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\DAO\BoardDAO;
+use App\DAO\BoardTypeDAO;
 use App\DAO\OpenCommandDAO;
 use App\DAO\SiteDAO;
+use App\DAO\VirtualDeviceDAO;
 use App\DAO\WifiNetworkDAO;
 use App\Support\AppLog;
 use App\Support\FirmwareAlreadyRunning;
@@ -26,7 +28,12 @@ class HeartbeatService
         private OpenCommandDAO $openCommandDAO,
         private ConfigVersionService $configVersionService,
         private FirmwareService $firmwareService,
-        private SiteDAO $siteDAO
+        private SiteDAO $siteDAO,
+        private BoardTypeDAO $boardTypeDAO,
+        private VirtualDeviceDAO $virtualDeviceDAO,
+        private VirtualDeviceService $virtualDeviceService,
+        private AccesstagService $accesstagService,
+        private EntryZenReadService $entryZenReadService
     ) {
     }
 
@@ -48,16 +55,10 @@ class HeartbeatService
         }
 
         $boardId = (int) $board['id'];
-        $completedId = isset($payload['completed_command_id']) ? (int) $payload['completed_command_id'] : 0;
-        if ($completedId > 0) {
-            $this->openCommandDAO->markCompleted($completedId, $boardId);
-            AppLog::info('open executed board=' . $hardwareId . ' command_id=' . $completedId);
-        }
-        $receivedId = isset($payload['received_command_id']) ? (int) $payload['received_command_id'] : 0;
-        if ($receivedId > 0) {
-            $this->openCommandDAO->markDelivered($receivedId, $boardId);
-            AppLog::info('open delivered board=' . $hardwareId . ' command_id=' . $receivedId);
-        }
+        $this->applyReportedBoardType($board, $payload);
+        $board = $this->boardDAO->findById($boardId) ?? $board;
+        $this->virtualDeviceService->ensureForBoard($boardId);
+        $this->applyReportedDevices($boardId, $payload);
 
         $status = trim((string) ($payload['status'] ?? 'unknown'));
         $gateState = $this->nullableString($payload['gate_state'] ?? null);
@@ -159,18 +160,19 @@ class HeartbeatService
             }
         }
 
-        $pending = $this->openCommandDAO->findPendingForBoard($boardId);
-        if ($pending !== null) {
+        $pendingByDevice = [];
+        foreach ($this->openCommandDAO->pendingForBoard($boardId) as $pending) {
+            $pendingByDevice[(int) $pending['virtual_device_id']] = $pending;
             $this->openCommandDAO->markDelivered((int) $pending['id'], $boardId);
         }
         $reboot = !empty($board['reboot_requested']);
         if ($reboot) {
             $this->boardDAO->clearRebootRequested($boardId);
         }
-        $board['open_pending'] = $pending !== null;
         $wifiInterval = FleetSettings::wifiHeartbeatIntervalSeconds();
         $loraInterval = FleetSettings::loraHeartbeatIntervalSeconds();
         $interval = FleetSettings::heartbeatIntervalSecondsForBoard($board);
+        $this->entryZenReadService->pushForBoard($boardId);
 
         $payload = [
             'success' => true,
@@ -178,13 +180,12 @@ class HeartbeatService
             'data' => [
                 'config' => $config,
                 'firmware' => $reboot ? null : $this->firmwareService->pendingPayloadForBoard($board),
-                'open' => $pending !== null,
-                'command_id' => $pending !== null ? (int) $pending['id'] : null,
                 'scan' => !empty($board['scan_requested']),
                 'reboot' => $reboot,
                 'heartbeat_interval_seconds' => $interval,
                 'wifi_heartbeat_interval_seconds' => $wifiInterval,
                 'lora_heartbeat_interval_seconds' => $loraInterval,
+                'virtual_devices' => $this->virtualDevicePayloads($boardId, $config !== null, $pendingByDevice, $payload),
             ],
             'error' => null,
         ];
@@ -207,14 +208,12 @@ class HeartbeatService
 
         $config = array_merge([
             'version' => $board['config_updated_at'],
-            'friendly_name' => $board['friendly_name'],
             'site_id' => $board['site_id'] !== null ? (int) $board['site_id'] : null,
-            'pulse_duration_ms' => PulseDuration::resolveFromBoard($board),
             'wifi_networks' => $networks,
             'lora_only' => !empty($board['lora_only']),
         ], FleetSettings::forBoardConfig());
 
-        if (!empty($board['site_id'])) {
+        if (!empty($board['has_lora']) && !empty($board['site_id'])) {
             $site = $this->siteDAO->findById((int) $board['site_id']);
             if ($site !== null) {
                 if (empty($site['lora_key'])) {
@@ -276,6 +275,122 @@ class HeartbeatService
 
         $offset = (int) $value;
         return $offset < 0 ? 0 : $offset;
+    }
+
+    /**
+     * @param array<string, mixed> $board
+     * @param array<string, mixed> $payload
+     */
+    private function applyReportedBoardType(array $board, array $payload): void
+    {
+        $name = trim((string) ($payload['board_type'] ?? ''));
+        if ($name === '') {
+            return;
+        }
+        $type = $this->boardTypeDAO->findByName($name);
+        if ($type === null) {
+            return;
+        }
+        if ((int) ($board['board_type_id'] ?? 0) === (int) $type['id']) {
+            return;
+        }
+        $this->boardDAO->setBoardType((int) $board['id'], (int) $type['id']);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function applyReportedDevices(int $boardId, array $payload): void
+    {
+        $reported = $payload['virtual_devices'] ?? null;
+        if (!is_array($reported)) {
+            return;
+        }
+        foreach ($reported as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $publicId = trim((string) ($item['id'] ?? ''));
+            if ($publicId === '') {
+                continue;
+            }
+            $device = $this->virtualDeviceDAO->findByPublicId($publicId);
+            if ($device === null || (int) $device['board_id'] !== $boardId) {
+                continue;
+            }
+            $completedId = isset($item['completed_command_id']) ? (int) $item['completed_command_id'] : 0;
+            if ($completedId > 0) {
+                $this->openCommandDAO->markCompleted($completedId, $boardId);
+                AppLog::info('open executed board=' . $boardId . ' command_id=' . $completedId);
+            }
+            $receivedId = isset($item['received_command_id']) ? (int) $item['received_command_id'] : 0;
+            if ($receivedId > 0) {
+                $this->openCommandDAO->markDelivered($receivedId, $boardId);
+            }
+            if ($device['wiegand_reader'] !== null && $device['wiegand_reader'] !== '') {
+                $this->accesstagService->confirmReport(
+                    $device,
+                    $item['accesstag_list_version'] ?? null,
+                    $item['accesstag_list_hash'] ?? null
+                );
+            }
+        }
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $pendingByDevice
+     * @param array<string, mixed> $request
+     * @return list<array<string, mixed>>
+     */
+    private function virtualDevicePayloads(int $boardId, bool $includeConfig, array $pendingByDevice, array $request): array
+    {
+        $reportedById = [];
+        $reported = $request['virtual_devices'] ?? null;
+        if (is_array($reported)) {
+            foreach ($reported as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $publicId = trim((string) ($item['id'] ?? ''));
+                if ($publicId !== '') {
+                    $reportedById[$publicId] = $item;
+                }
+            }
+        }
+
+        $payloads = [];
+        foreach ($this->virtualDeviceDAO->findByBoardId($boardId) as $device) {
+            $item = ['id' => (string) $device['public_id']];
+            if ($includeConfig) {
+                $relays = [];
+                foreach ($this->virtualDeviceDAO->relays((int) $device['id']) as $relay) {
+                    $relays[] = [
+                        'relay' => (int) $relay['relay_number'],
+                        'pulse_duration_ms' => PulseDuration::resolve(
+                            PulseDuration::stored($relay['pulse_duration_ms'] ?? null),
+                            PulseDuration::stored($device['site_pulse_duration_ms'] ?? null)
+                        ),
+                    ];
+                }
+                $wiegand = $device['wiegand_reader'];
+                $item['config'] = [
+                    'friendly_name' => $device['friendly_name'],
+                    'relays' => $relays,
+                    'wiegand' => $wiegand === null || $wiegand === '' ? null : (int) $wiegand,
+                ];
+            }
+            $pending = $pendingByDevice[(int) $device['id']] ?? null;
+            if ($pending !== null) {
+                $item['open'] = ['command_id' => (int) $pending['id']];
+            }
+            $item = array_merge($item, $this->accesstagService->heartbeatFields(
+                $device,
+                $reportedById[(string) $device['public_id']] ?? []
+            ));
+            $payloads[] = $item;
+        }
+
+        return $payloads;
     }
 
     private function fail(string $message, string $code): array

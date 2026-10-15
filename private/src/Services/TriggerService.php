@@ -6,6 +6,7 @@ namespace App\Services;
 
 use App\DAO\BoardDAO;
 use App\DAO\OpenCommandDAO;
+use App\DAO\VirtualDeviceDAO;
 use App\Support\FleetSettings;
 
 class TriggerService
@@ -13,6 +14,7 @@ class TriggerService
     public function __construct(
         private AuthService $authService,
         private BoardDAO $boardDAO,
+        private VirtualDeviceDAO $virtualDeviceDAO,
         private OpenCommandDAO $openCommandDAO
     ) {
     }
@@ -25,20 +27,32 @@ class TriggerService
 
         $identifier = trim($identifier);
         if ($identifier === '') {
-            return $this->fail('Board identifier is required.', 'VALIDATION_ERROR');
+            return $this->fail('Identifier is required.', 'VALIDATION_ERROR');
         }
 
-        $board = $this->boardDAO->findByHardwareId($identifier);
+        $device = $this->virtualDeviceDAO->findByPublicId($identifier);
+        if ($device === null) {
+            return $this->fail('Virtual device not found.', 'NOT_FOUND');
+        }
+        if ($this->virtualDeviceDAO->relays((int) $device['id']) === []) {
+            return $this->fail('Virtual device has no relays.', 'VALIDATION_ERROR');
+        }
+
+        $board = $this->boardDAO->findById((int) $device['board_id']);
         if ($board === null) {
-            return $this->fail('Board not found.', 'NOT_FOUND');
+            return $this->fail('Virtual device not found.', 'NOT_FOUND');
         }
 
-        $this->openCommandDAO->queue((int) $board['id'], FleetSettings::openCommandTtlSecondsForBoard($board));
+        $this->openCommandDAO->queue(
+            (int) $board['id'],
+            (int) $device['id'],
+            FleetSettings::openCommandTtlSecondsForBoard($board)
+        );
 
         return [
             'success' => true,
             'data' => [
-                'hardware_id' => $board['hardware_id'],
+                'virtual_device' => (string) $device['public_id'],
             ],
             'error' => null,
         ];

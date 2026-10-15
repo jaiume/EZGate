@@ -9,6 +9,7 @@ require BASE_DIR . '/vendor/autoload.php';
 
 use App\DAO\FirmwareVersionDAO;
 use App\Services\FirmwareService;
+use App\Support\BoardTypes;
 
 $container = require BASE_DIR . '/config/container.php';
 /** @var FirmwareService $firmware */
@@ -18,6 +19,7 @@ $versions = $container->get(FirmwareVersionDAO::class);
 
 $projectRoot = dirname(BASE_DIR);
 $buildDir = $argv[1] ?? $projectRoot . '/firmware/.pio/build/heltec_wireless_stick_v3';
+$boardType = $argv[2] ?? BoardTypes::HELTEC;
 
 $app = $buildDir . '/firmware.bin';
 $bootloader = $buildDir . '/bootloader.bin';
@@ -41,19 +43,21 @@ if (!is_file($bootApp0)) {
     }
 }
 
-$result = $firmware->publishFromBuild($app, $bootloader, $partitions, $bootApp0);
+$result = $firmware->publishFromBuild($app, $bootloader, $partitions, $bootApp0, $boardType);
 echo $result['message'] . PHP_EOL;
 if (!$result['success']) {
     exit(1);
 }
 
-foreach (['0.2.0', '0.3.1'] as $stub) {
-    $row = $versions->findByVersion($stub);
-    if ($row === null) {
-        continue;
+if ($boardType === BoardTypes::HELTEC) {
+    foreach (['0.2.0', '0.3.1'] as $stub) {
+        $row = $versions->findByVersion($stub);
+        if ($row === null) {
+            continue;
+        }
+        $deleted = $firmware->deleteVersion((int) $row['id']);
+        echo $deleted['message'] . PHP_EOL;
     }
-    $deleted = $firmware->deleteVersion((int) $row['id']);
-    echo $deleted['message'] . PHP_EOL;
 }
 
 echo 'Published ' . ($result['data']['version'] ?? '') . ' (' . ($result['data']['size'] ?? 0) . ' bytes).' . PHP_EOL;

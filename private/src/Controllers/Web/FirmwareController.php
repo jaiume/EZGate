@@ -23,9 +23,14 @@ class FirmwareController
 
     public function index(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
     {
-        $result = $this->firmwareService->listPage();
+        $result = $this->firmwareService->listPage(
+            isset($request->getQueryParams()['type']) ? (int) $request->getQueryParams()['type'] : null
+        );
         return $this->twig->render($response, 'firmware/index.twig', [
             'versions' => $result['data']['versions'] ?? [],
+            'board_types' => $result['data']['board_types'] ?? [],
+            'board_type_id' => $result['data']['board_type_id'] ?? null,
+            'board_type_name' => $result['data']['board_type_name'] ?? '',
             'fleet_tree' => $result['data']['fleet_tree'] ?? [],
             'notice' => $request->getQueryParams()['notice'] ?? null,
             'error' => $request->getQueryParams()['error'] ?? null,
@@ -36,14 +41,16 @@ class FirmwareController
     {
         $files = $request->getUploadedFiles();
         $file = $files['binary'] ?? null;
+        $body = (array) $request->getParsedBody();
         $result = $this->firmwareService->createFromUpload(
-            $file instanceof UploadedFileInterface ? $file : null
+            $file instanceof UploadedFileInterface ? $file : null,
+            (int) ($body['board_type_id'] ?? 0)
         );
         if (!$result['success']) {
-            return Redirector::to('/firmware?error=' . urlencode($result['message']));
+            return Redirector::to('/ota?error=' . urlencode($result['message']));
         }
 
-        return Redirector::to('/firmware?notice=' . urlencode($result['message']));
+        return Redirector::to('/ota?notice=' . urlencode($result['message']));
     }
 
     public function push(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
@@ -70,7 +77,7 @@ class FirmwareController
             );
         }
 
-        $path = $this->safeReturn((string) ($body['return_to'] ?? '/firmware'));
+        $path = $this->safeReturn((string) ($body['return_to'] ?? '/ota'));
         $sep = str_contains($path, '?') ? '&' : '?';
         if (!$result['success']) {
             return Redirector::to($path . $sep . 'error=' . urlencode($result['message']));
@@ -83,10 +90,10 @@ class FirmwareController
     {
         $result = $this->firmwareService->deleteVersion((int) ($args['id'] ?? 0));
         if (!$result['success']) {
-            return Redirector::to('/firmware?error=' . urlencode($result['message']));
+            return Redirector::to('/ota?error=' . urlencode($result['message']));
         }
 
-        return Redirector::to('/firmware?notice=' . urlencode($result['message']));
+        return Redirector::to('/ota?notice=' . urlencode($result['message']));
     }
 
     public function file(ServerRequestInterface $request, ResponseInterface $response, array $args): ResponseInterface
@@ -96,13 +103,13 @@ class FirmwareController
             if (str_contains($request->getHeaderLine('Accept'), 'application/json')) {
                 return \App\Support\JsonResponder::fromService($result);
             }
-            return Redirector::to('/firmware?error=' . urlencode($result['message']));
+            return Redirector::to('/ota?error=' . urlencode($result['message']));
         }
 
         $data = $result['data'];
         $handle = fopen($data['path'], 'rb');
         if ($handle === false) {
-            return Redirector::to('/firmware?error=' . urlencode('Firmware file is missing.'));
+            return Redirector::to('/ota?error=' . urlencode('Firmware file is missing.'));
         }
 
         $filename = str_replace(['"', "\r", "\n"], '', (string) $data['filename']);
@@ -128,13 +135,13 @@ class FirmwareController
             if (str_contains($request->getHeaderLine('Accept'), 'application/json')) {
                 return JsonResponder::fromService($result);
             }
-            return Redirector::to('/firmware?error=' . urlencode($result['message']));
+            return Redirector::to('/ota?error=' . urlencode($result['message']));
         }
 
         $data = $result['data'];
         $handle = fopen($data['path'], 'rb');
         if ($handle === false) {
-            return Redirector::to('/firmware?error=' . urlencode('USB image part is missing.'));
+            return Redirector::to('/ota?error=' . urlencode('USB image part is missing.'));
         }
 
         $filename = str_replace(['"', "\r", "\n"], '', (string) $data['filename']);
@@ -151,7 +158,7 @@ class FirmwareController
     private function safeReturn(string $path): string
     {
         if ($path === '' || !str_starts_with($path, '/') || str_starts_with($path, '//')) {
-            return '/firmware';
+            return '/ota';
         }
         return $path;
     }

@@ -39,6 +39,18 @@ bool loraRadioBegin(float mhz) {
     return started;
 }
 
+bool loraRadioChannelBusy() {
+    if (!started) {
+        return false;
+    }
+    radio.clearDio1Action();
+    int16_t st = radio.scanChannel();
+    rxFlag = false;
+    radio.setDio1Action(onDio1);
+    radio.startReceive();
+    return st == RADIOLIB_LORA_DETECTED;
+}
+
 bool loraRadioSend(const uint8_t *data, size_t len) {
     if (!started || data == nullptr || len == 0 || len > 255) {
         return false;

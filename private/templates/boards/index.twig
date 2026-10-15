@@ -64,10 +64,12 @@
                     </dd>
                 </dl>
                 <div class="d-flex flex-wrap gap-2">
+                    {% if board.relay_count is not defined or board.relay_count <= 1 %}
                     <form method="post" action="/boards/{{ board.id }}/trigger" class="mb-0" onsubmit="return confirm('Queue an open pulse on this board?');">
                         <input type="hidden" name="_csrf" value="{{ csrf_token }}">
                         <button class="btn btn-sm btn-outline-success" type="submit">Test Trigger</button>
                     </form>
+                    {% endif %}
                     <a class="btn btn-sm btn-outline-primary" href="/boards/{{ board.id }}">Edit</a>
                 </div>
             </div>

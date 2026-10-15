@@ -52,7 +52,16 @@ class BoardPresenter
             $board['reported_config_version'] ?? null
         );
         $board['uptime_label'] = Uptime::label($board['last_uptime_seconds'] ?? null);
-        $board['pulse_ms'] = PulseDuration::resolveFromBoard($board);
+        $board['pulse_ms'] = (int) ($board['relay_count'] ?? 1) === 1
+            ? PulseDuration::resolve(
+                PulseDuration::stored($board['primary_relay_pulse_ms'] ?? null),
+                PulseDuration::stored($board['site_pulse_duration_ms'] ?? null)
+            )
+            : null;
+        $board['has_lora'] = !array_key_exists('has_lora', $board) || (int) $board['has_lora'] === 1;
+        $board['relay_count'] = (int) ($board['relay_count'] ?? 1);
+        $board['wiegand_count'] = (int) ($board['wiegand_count'] ?? 0);
+        $board['board_type_name'] = (string) ($board['board_type_name'] ?? '');
         $board['lora_only'] = !empty($board['lora_only']);
         $board['radio_stats'] = $stats !== [] ? $stats : null;
         $board['open_status'] = $board['open_status'] ?? null;
@@ -146,6 +155,7 @@ class BoardPresenter
         $normalized = strtolower(trim((string) $type));
         return match ($normalized) {
             'wifi' => 'WiFi',
+            'ethernet' => 'Ethernet',
             'lora' => 'LoRa',
             default => null,
         };

@@ -25,6 +25,7 @@ extern unsigned long lastPortalOkMs;
 extern bool lastPortalAttemptOk;
 extern bool lastInternetOk;
 extern int pendingCommandId;
+extern int reportedCommandId;
 extern bool pendingScanAck;
 extern bool scanWanted;
 extern bool otaSession;
@@ -36,6 +37,7 @@ extern String otaChecksum;
 extern bool loraOnly;
 extern bool wifiRoamActive;
 extern int loraFreqHz;
+extern int loraRssiFloor;
 extern int isolationMisses;
 extern int loraHopLimit;
 extern int loraTxRetries;
@@ -43,6 +45,7 @@ extern int loraDiscMinMs;
 extern int loraDiscMaxMs;
 extern int loraStaggerMs;
 extern int loraRouteExpiry;
+extern int loraBeaconMultiple;
 extern int loraOtaMax;
 extern int loraOtaAirtimeMs;
 extern bool loraLogRadio;
@@ -57,8 +60,10 @@ extern void ezgSetHeartbeatSeconds(int seconds);
 extern void ezgSetWifiHeartbeatSeconds(int seconds);
 extern bool ezgHandleOpenCommand(uint32_t cmd);
 extern void ezgFlashHeartbeatLed();
-extern void ezgApplyConfigObject(JsonObjectConst cfg);
+extern void ezgSetVirtualDeviceId(const String &id);
+extern String ezgVirtualDeviceId();
 extern void ezgApplyConfigJson(const char *js, size_t n);
+extern void ezgApplyConfigObject(JsonObjectConst cfg);
 extern bool ezgBeginOtaMeta(const String &version, const String &checksum, int size, int chunkSize);
 extern bool ezgWriteOtaBytes(const uint8_t *data, int len);
 extern int ezgReadGateState();
@@ -66,6 +71,7 @@ extern String ezgFallbackFirmware();
 extern unsigned long ezgUptimeSeconds();
 extern void ezgConfirmFirmware();
 extern void ezgRebootBoard();
+extern void ezgApplyOwnHeartbeat(bool ok, const char *json);
 
 namespace {
 
@@ -130,22 +136,31 @@ struct HttpJob {
     char *body;
     int otaOff;
     int otaLen;
+    uint8_t gen;
+    uint8_t tries;
 };
 
 struct OtaHold {
     bool ready;
     bool active;
+    bool waitAck;
+    bool fetchQueued;
     uint8_t dst[6];
+    uint8_t fetchGen;
     uint32_t offset;
     uint16_t len;
+    uint16_t waitLen;
+    uint16_t waitPkt;
     uint32_t total;
+    unsigned long waitMs;
+    unsigned long fetchMs;
     char version[17];
     char checksum[65];
     char url[160];
     uint8_t data[199];
 };
 
-enum { JOB_HB = 1, JOB_SETUP = 2, JOB_OTA = 3 };
+enum { JOB_HB = 1, JOB_SETUP = 2, JOB_OTA = 3, JOB_LIST = 4 };
 
 uint8_t selfMac[6];
 uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -164,6 +179,25 @@ unsigned long lastLoraPortalOkMs = 0;
 unsigned long lastBeaconMs = 0;
 unsigned long lastProbeMs = 0;
 unsigned long lastHbLoraMs = 0;
+bool hbListening = false;
+uint16_t hbWaitPkt = 0;
+unsigned long hbListenDeadline = 0;
+unsigned long hbRetryAt = 0;
+uint8_t hbExtrasLeft = 0;
+unsigned long hbIntervalStart = 0;
+bool portalMissArmed = false;
+unsigned long portalMissDeadline = 0;
+bool parentHeldOff = false;
+uint8_t heldOffMac[6] = {};
+unsigned long childListenUntil = 0;
+unsigned long downDeferUntil = 0;
+unsigned long nextBeaconAt = 0;
+unsigned long nextProbeAt = 0;
+unsigned long uplinkPauseStart = 0;
+bool ownHbReady = false;
+bool ownHbOk = false;
+char *ownHbBody = nullptr;
+portMUX_TYPE ownHbMux = portMUX_INITIALIZER_UNLOCKED;
 unsigned long airWindowStart = 0;
 unsigned long airUsedMs = 0;
 unsigned long lastHeardParentMs = 0;
@@ -202,6 +236,14 @@ struct ChunkTx {
 };
 
 ChunkTx chunkTx = {};
+const unsigned long CHUNK_ACK_LISTEN_MS = 1500UL;
+struct CfgDone {
+    uint8_t dst[6];
+    uint32_t crc;
+    uint32_t len;
+    bool used;
+};
+CfgDone cfgDone[8];
 struct ChunkPend {
     uint8_t kind;
     uint8_t dst[6];
@@ -220,7 +262,13 @@ const char *chunkKindName(uint8_t kind) {
     if (kind == LORA_CHUNK_KIND_UPLINK) {
         return "uplink";
     }
-    return "config";
+    if (kind == LORA_CHUNK_KIND_LIST) {
+        return "list";
+    }
+    if (kind == LORA_CHUNK_KIND_CONFIG) {
+        return "config";
+    }
+    return "other";
 }
 
 void logRadio(const char *msg) {
@@ -374,6 +422,10 @@ bool sendRaw(const uint8_t *frame, size_t len) {
 }
 
 bool sendFrame(uint8_t type, const uint8_t *dst, uint8_t hop, const uint8_t *plain, uint8_t plen, bool encrypt) {
+    if (type != T_ACK && loraRadioChannelBusy()) {
+        logRadio("cad busy");
+        return false;
+    }
     uint8_t frame[255];
     LoraHdr hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -421,6 +473,54 @@ bool ours(const uint8_t *dst) {
     return macEq(dst, selfMac) || macBcast(dst);
 }
 
+const unsigned long HB_LISTEN_MS = 400;
+
+bool deadlineDue(unsigned long deadline) {
+    return deadline != 0 && (long) (millis() - deadline) >= 0;
+}
+
+unsigned long missBackoffMs() {
+    return 1000UL + (esp_random() % 2001UL);
+}
+
+unsigned long beaconOffsetMs() {
+    unsigned long intervalMs = (unsigned long) loraHeartbeatSeconds * 1000UL;
+    if (intervalMs < 2000UL) {
+        intervalMs = 2000UL;
+    }
+    unsigned long half = intervalMs / 2UL;
+    if (half <= 300UL) {
+        return 300UL;
+    }
+    return 300UL + (esp_random() % (half - 300UL));
+}
+
+unsigned long portalWindowMs() {
+    unsigned long window = (unsigned long) isolationMisses * (unsigned long) loraHeartbeatSeconds * 1000UL;
+    if (window < 1000UL) {
+        window = 1000UL;
+    }
+    return window;
+}
+
+void armPortalMiss() {
+    portalMissDeadline = millis() + portalWindowMs();
+    portalMissArmed = true;
+}
+
+void dropParentForPortal() {
+    if (haveParent) {
+        memcpy(heldOffMac, parentMac, 6);
+        parentHeldOff = true;
+    }
+    haveParent = false;
+    hopsToGw = 255;
+    hbListening = false;
+    hbRetryAt = 0;
+    portalMissArmed = false;
+    logRadio("portal miss drop");
+}
+
 void selectParent() {
     unsigned long ttl = (unsigned long) loraRouteExpiry * (unsigned long) loraHeartbeatSeconds * 1000UL;
     if (ttl < 1000) {
@@ -434,6 +534,9 @@ void selectParent() {
             continue;
         }
         if (macEq(peers[i].mac, selfMac)) {
+            continue;
+        }
+        if (parentHeldOff && macEq(peers[i].mac, heldOffMac)) {
             continue;
         }
         if (peers[i].hops >= loraHopLimit) {
@@ -464,11 +567,12 @@ void selectParent() {
     gwEpoch = peers[best].epoch;
     lastHeardParentMs = peers[best].heardMs;
     if (changed) {
+        armPortalMiss();
         logRadioNum("parent select hops ", hopsToGw);
     }
 }
 
-void sendBeacon() {
+bool sendBeacon() {
     uint8_t p[24];
     memset(p, 0, sizeof(p));
     p[0] = (uint8_t) (siteId & 0xFF);
@@ -480,17 +584,18 @@ void sendBeacon() {
     uint8_t nlen = nm.length() > 16 ? 16 : (uint8_t) nm.length();
     p[5] = nlen;
     memcpy(p + 6, nm.c_str(), nlen);
-    sendFrame(T_BEACON, bcast, 0, p, (uint8_t) (6 + nlen), false);
+    return sendFrame(T_BEACON, bcast, 0, p, (uint8_t) (6 + nlen), false);
 }
 
-void sendProbe() {
+bool sendProbe() {
     uint8_t p[2] = {0, 0};
-    sendFrame(T_PROBE, bcast, 0, p, 2, false);
+    bool ok = sendFrame(T_PROBE, bcast, 0, p, 2, false);
     logRadio("probe");
+    return ok;
 }
 
 void answerProbe(const uint8_t *src, int rssi) {
-    if (rssi < EZG_LORA_WEAK_RSSI) {
+    if (rssi < loraRssiFloor) {
         logRadio("probe suppress");
         return;
     }
@@ -574,12 +679,19 @@ void handleProbeAck(const LoraHdr &hdr, const uint8_t *plain, uint8_t plen, int 
     uint16_t epoch = plain[1] | (plain[2] << 8);
     touchPeer(hdr.src, hops, rssi, epoch);
     lastRadioOkMs = millis();
+    if (parentHeldOff && macEq(hdr.src, heldOffMac)) {
+        parentHeldOff = false;
+    }
     if (!ezgWifiConnected() || loraOnly) {
         selectParent();
     }
 }
 
-bool enqueueJob(uint8_t prio, uint8_t kind, const uint8_t src[6], const String &body, int otaOff, int otaLen) {
+bool bodyHasCompletion(const char *body) {
+    return body != nullptr && strstr(body, "\"completed_command_id\"") != nullptr;
+}
+
+bool enqueueJob(uint8_t prio, uint8_t kind, const uint8_t src[6], const String &body, int otaOff, int otaLen, uint8_t gen = 0) {
     if (httpQ == nullptr) {
         return false;
     }
@@ -590,11 +702,49 @@ bool enqueueJob(uint8_t prio, uint8_t kind, const uint8_t src[6], const String &
     memcpy(job.src, src, 6);
     job.otaOff = otaOff;
     job.otaLen = otaLen;
+    job.gen = gen;
     job.body = (char *) malloc(body.length() + 1);
     if (job.body == nullptr) {
         return false;
     }
     memcpy(job.body, body.c_str(), body.length() + 1);
+    if (kind == JOB_HB) {
+        HttpJob pending[6];
+        int n = 0;
+        while (n < 6 && xQueueReceive(httpQ, &pending[n], 0) == pdTRUE) {
+            n++;
+        }
+        int match = -1;
+        for (int i = 0; i < n; i++) {
+            if (pending[i].kind == JOB_HB && macEq(pending[i].src, src)) {
+                match = i;
+                break;
+            }
+        }
+        if (match >= 0) {
+            if (bodyHasCompletion(pending[match].body) && !bodyHasCompletion(job.body)) {
+                free(job.body);
+                job.body = nullptr;
+            } else {
+                free(pending[match].body);
+                pending[match] = job;
+                job.body = nullptr;
+            }
+            bool queued = true;
+            for (int i = 0; i < n; i++) {
+                if (xQueueSend(httpQ, &pending[i], 0) != pdTRUE) {
+                    free(pending[i].body);
+                    queued = false;
+                }
+            }
+            return queued;
+        }
+        for (int i = 0; i < n; i++) {
+            if (xQueueSend(httpQ, &pending[i], 0) != pdTRUE) {
+                free(pending[i].body);
+            }
+        }
+    }
     if (xQueueSend(httpQ, &job, 0) == pdTRUE) {
         return true;
     }
@@ -643,6 +793,36 @@ bool enqueueDown(const uint8_t *dst, uint8_t kind, const uint8_t *payload, uint8
     if (payload != nullptr && job.plen) {
         memcpy(job.payload, payload, job.plen);
     }
+    if (xQueueSend(downQ, &job, 0) == pdTRUE) {
+        return true;
+    }
+    if (kind != D_INTERVAL) {
+        return false;
+    }
+    DownJob held[8];
+    int n = 0;
+    while (n < 8 && xQueueReceive(downQ, &held[n], 0) == pdTRUE) {
+        n++;
+    }
+    int drop = -1;
+    for (int i = 0; i < n; i++) {
+        if (held[i].kind != D_OPEN) {
+            drop = i;
+            break;
+        }
+    }
+    if (drop < 0) {
+        for (int i = 0; i < n; i++) {
+            xQueueSend(downQ, &held[i], 0);
+        }
+        return false;
+    }
+    for (int i = 0; i < n; i++) {
+        if (i == drop) {
+            continue;
+        }
+        xQueueSend(downQ, &held[i], 0);
+    }
     return xQueueSend(downQ, &job, 0) == pdTRUE;
 }
 
@@ -657,22 +837,91 @@ bool chunkTxBusy() {
     return busy;
 }
 
+bool chunkAckListen() {
+    portENTER_CRITICAL(&chunkMux);
+    bool listen = chunkTx.active && chunkTx.waitAck
+        && (millis() - chunkTx.waitMs) < CHUNK_ACK_LISTEN_MS;
+    portEXIT_CRITICAL(&chunkMux);
+    return listen;
+}
+
+bool otaFwAckListen() {
+    return otaHold.active && otaHold.waitAck
+        && (millis() - otaHold.waitMs) < CHUNK_ACK_LISTEN_MS;
+}
+
+bool queueOtaFetch(uint32_t off) {
+    otaHold.fetchGen++;
+    uint8_t gen = otaHold.fetchGen;
+    uint16_t cap = loraChunkMaxData((uint16_t) otaLoraChunk);
+    if (cap > sizeof(otaHold.data)) {
+        cap = sizeof(otaHold.data);
+    }
+    if (!enqueueJob(P_OTA, JOB_OTA, otaHold.dst, String(otaHold.url), (int) off, cap, gen)) {
+        otaHold.fetchMs = millis();
+        return false;
+    }
+    otaHold.fetchQueued = true;
+    otaHold.fetchMs = millis();
+    return true;
+}
+
+bool configDelivered(const uint8_t *dst, uint32_t crc, uint32_t len) {
+    bool yes = false;
+    portENTER_CRITICAL(&chunkMux);
+    for (int i = 0; i < 8; i++) {
+        if (cfgDone[i].used && cfgDone[i].crc == crc && cfgDone[i].len == len && macEq(cfgDone[i].dst, dst)) {
+            yes = true;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&chunkMux);
+    return yes;
+}
+
+void rememberConfig(const uint8_t *dst, uint32_t crc, uint32_t len) {
+    portENTER_CRITICAL(&chunkMux);
+    int slot = -1;
+    for (int i = 0; i < 8; i++) {
+        if (cfgDone[i].used && macEq(cfgDone[i].dst, dst)) {
+            slot = i;
+            break;
+        }
+        if (slot < 0 && !cfgDone[i].used) {
+            slot = i;
+        }
+    }
+    if (slot < 0) {
+        slot = 0;
+    }
+    memcpy(cfgDone[slot].dst, dst, 6);
+    cfgDone[slot].crc = crc;
+    cfgDone[slot].len = len;
+    cfgDone[slot].used = true;
+    portEXIT_CRITICAL(&chunkMux);
+}
+
 void drainDown() {
     if (downQ == nullptr) {
         return;
     }
+    if (downDeferUntil != 0 && (long) (millis() - downDeferUntil) < 0) {
+        return;
+    }
+    downDeferUntil = 0;
     if (millis() - lastTxMs < 150UL) {
         return;
     }
-    if (chunkTxBusy()) {
+    bool pulseNow = false;
+    bool holdForAck = chunkAckListen() || otaFwAckListen();
+    if (chunkTxBusy() || holdForAck) {
         DownJob peek;
         if (xQueuePeek(downQ, &peek, 0) != pdTRUE || peek.kind != D_OPEN) {
-            portENTER_CRITICAL(&chunkMux);
-            bool waiting = chunkTx.waitAck;
-            portEXIT_CRITICAL(&chunkMux);
-            if (waiting) {
+            if (holdForAck) {
                 return;
             }
+        } else if (holdForAck) {
+            pulseNow = true;
         }
     }
     DownJob job;
@@ -684,7 +933,23 @@ void drainDown() {
     if (job.plen) {
         memcpy(buf + 1, job.payload, job.plen);
     }
-    sendFrame(T_DOWN, job.dst, 0, buf, (uint8_t) (1 + job.plen), true);
+    if (!sendFrame(T_DOWN, job.dst, 0, buf, (uint8_t) (1 + job.plen), true)) {
+        if (xQueueSendToFront(downQ, &job, 0) != pdTRUE) {
+            logRadio("down drop");
+        }
+        downDeferUntil = millis() + missBackoffMs();
+        return;
+    }
+    if (pulseNow) {
+        portENTER_CRITICAL(&chunkMux);
+        chunkTx.waitAck = false;
+        portEXIT_CRITICAL(&chunkMux);
+        if (otaHold.active && otaHold.waitAck) {
+            otaHold.waitAck = false;
+            otaHold.ready = true;
+            Serial.println("EZG chunk fw pulse retry");
+        }
+    }
 }
 
 void chunkPendClear() {
@@ -799,7 +1064,7 @@ void drainChunks() {
         return;
     }
     if (chunkTx.active && chunkTx.waitAck) {
-        if (millis() - chunkTx.waitMs < 400UL) {
+        if (millis() - chunkTx.waitMs < CHUNK_ACK_LISTEN_MS) {
             portEXIT_CRITICAL(&chunkMux);
             return;
         }
@@ -843,13 +1108,28 @@ void drainChunks() {
     if (chunkTx.active) {
         return;
     }
+    if (otaHold.active && otaHold.waitAck) {
+        if (millis() - otaHold.waitMs < CHUNK_ACK_LISTEN_MS) {
+            return;
+        }
+        otaHold.waitAck = false;
+        otaHold.ready = true;
+        Serial.println("EZG chunk fw retry");
+    }
     if (!otaHold.ready || !otaHold.active) {
         return;
+    }
+    if (airWindowStart == 0 || millis() - airWindowStart > (unsigned long) loraHeartbeatSeconds * 1000UL) {
+        airWindowStart = millis();
+        airUsedMs = 0;
     }
     if (airUsedMs >= (unsigned long) loraOtaAirtimeMs) {
         return;
     }
     uint16_t cap = loraChunkMaxData((uint16_t) otaLoraChunk);
+    if (cap > sizeof(otaHold.data)) {
+        cap = sizeof(otaHold.data);
+    }
     uint16_t n = otaHold.len > cap ? cap : otaHold.len;
     if (n == 0) {
         return;
@@ -866,36 +1146,85 @@ void drainChunks() {
     if (!sendFrame(T_CHUNK, otaHold.dst, 0, pkt, pktLen, true)) {
         return;
     }
+    otaHold.ready = false;
+    otaHold.waitAck = true;
+    otaHold.waitPkt = lastSentPkt;
+    otaHold.waitLen = n;
+    otaHold.waitMs = millis();
     Serial.print("EZG chunk fw offset ");
     Serial.println((int) otaHold.offset);
-    uint32_t next = otaHold.offset + n;
+}
+
+void onFwAck(uint16_t pkt) {
+    if (!otaHold.active || !otaHold.waitAck || otaHold.waitPkt != pkt) {
+        return;
+    }
+    otaHold.waitAck = false;
+    uint32_t next = otaHold.offset + otaHold.waitLen;
+    otaHold.waitLen = 0;
     otaHold.ready = false;
     if (next >= otaHold.total) {
         otaHold.active = false;
+        otaHold.fetchQueued = false;
         otaActive = otaActive > 0 ? otaActive - 1 : 0;
-    } else {
-        enqueueJob(P_OTA, JOB_OTA, otaHold.dst, String(otaHold.url), (int) next, cap);
+        Serial.println("EZG chunk fw done");
+        return;
+    }
+    if (!queueOtaFetch(next)) {
+        otaHold.offset = next;
+        otaHold.fetchQueued = false;
+        otaHold.fetchMs = millis();
+        Serial.println("EZG chunk fw queue fail");
     }
 }
 
+void otaSeek(uint32_t off) {
+    if (otaHold.total > 0 && off > otaHold.total) {
+        off = 0;
+    }
+    otaHold.fetchGen++;
+    otaHold.offset = off;
+    otaHold.len = 0;
+    otaHold.ready = false;
+    otaHold.waitAck = false;
+    otaHold.waitLen = 0;
+    otaHold.fetchQueued = false;
+    otaHold.fetchMs = 0;
+}
+
 void onChunkAck(uint16_t pkt) {
+    uint8_t kind = 0;
+    uint32_t crc = 0;
+    uint32_t total = 0;
+    uint8_t dst[6];
+    memset(dst, 0, sizeof(dst));
+    bool done = false;
     portENTER_CRITICAL(&chunkMux);
     if (!chunkTx.active || !chunkTx.waitAck || chunkTx.waitPkt != pkt) {
         portEXIT_CRITICAL(&chunkMux);
+        onFwAck(pkt);
         return;
     }
     chunkTx.offset += chunkTx.waitLen;
     chunkTx.waitAck = false;
     chunkTx.waitLen = 0;
-    bool done = chunkTx.offset >= chunkTx.total;
+    done = chunkTx.offset >= chunkTx.total;
     if (done) {
+        kind = chunkTx.kind;
+        crc = chunkTx.crc;
+        total = chunkTx.total;
+        memcpy(dst, chunkTx.dst, 6);
         chunkTxClearLocked();
     }
     portEXIT_CRITICAL(&chunkMux);
     if (done) {
         Serial.println("EZG chunk done");
+        if (kind == LORA_CHUNK_KIND_CONFIG) {
+            rememberConfig(dst, crc, total);
+        }
         chunkTxKickPend();
     }
+    onFwAck(pkt);
 }
 
 bool handleChunk(const uint8_t *plain, uint8_t plen, const uint8_t *src) {
@@ -956,7 +1285,13 @@ bool handleChunk(const uint8_t *plain, uint8_t plen, const uint8_t *src) {
                     && extra["hardware_id"].is<const char *>()) {
                     macFromId(String(extra["hardware_id"].as<const char *>()), origin);
                 }
-                enqueueJob(P_HB, JOB_HB, origin, String((const char *) chunkRx.buf), 0, 0);
+                bool listPull = extra["pull"].is<const char *>()
+                    && String(extra["pull"].as<const char *>()) == "accesstag-list";
+                if (!listPull && extra["virtual_device"].is<const char *>() && extra["offset"].is<int>()
+                    && extra.containsKey("from_version")) {
+                    listPull = true;
+                }
+                enqueueJob(P_HB, listPull ? JOB_LIST : JOB_HB, origin, String((const char *) chunkRx.buf), 0, 0);
                 Serial.println("EZG uplink posted");
             } else if (haveParent) {
                 chunkTxBegin(parentMac, LORA_CHUNK_KIND_UPLINK, chunkRx.buf, chunkRx.total);
@@ -1026,17 +1361,29 @@ void applyDown(const uint8_t *plain, uint8_t plen) {
         }
         ezgBeginOtaMeta(ver, sum, (int) size, chunk > 0 ? chunk : otaLoraChunk);
         logRadioNum("OTA meta size ", (int) size);
-    } else if (kind == D_INTERVAL && n >= 2) {
+        } else if (kind == D_INTERVAL && n >= 2) {
         int iv = p[0] | (p[1] << 8);
         ezgSetHeartbeatSeconds(iv);
         if (n >= 4) {
             ezgSetWifiHeartbeatSeconds(p[2] | (p[3] << 8));
         }
+        if (n > 4) {
+            String id;
+            for (uint8_t i = 4; i < n && p[i] != 0; i++) {
+                id += (char) p[i];
+            }
+            ezgSetVirtualDeviceId(id);
+        }
+        if (pendingCommandId == reportedCommandId) {
+            pendingCommandId = 0;
+        }
+        reportedCommandId = 0;
         loraPortalOkFlag = true;
         lastLoraPortalOkMs = millis();
         lastPortalOkMs = millis();
         lastPortalAttemptOk = true;
         pendingScanAck = false;
+        armPortalMiss();
         ezgFlashHeartbeatLed();
         logRadio("dest_ok");
     } else if (kind == D_SETUP_OK && n > 2) {
@@ -1106,7 +1453,7 @@ uint32_t configVersionUnix() {
 }
 
 void packOwnHb(uint8_t *p, uint8_t &plen) {
-    memset(p, 0, 64);
+    memset(p, 0, 128);
     uint8_t flags = 0;
     if (ezgWifiConnected()) {
         flags |= 0x01;
@@ -1156,6 +1503,7 @@ void packOwnHb(uint8_t *p, uint8_t &plen) {
     p[39] = dropCfg > 255 ? 255 : (uint8_t) dropCfg;
     p[40] = dropOta > 255 ? 255 : (uint8_t) dropOta;
     uint16_t done = pendingCommandId > 0 ? (uint16_t) pendingCommandId : 0;
+    reportedCommandId = pendingCommandId > 0 ? pendingCommandId : 0;
     memcpy(p + 41, &done, 2);
     memcpy(p + 43, &gwEpoch, 2);
     uint16_t iv = (uint16_t) loraHeartbeatSeconds;
@@ -1176,7 +1524,19 @@ void packOwnHb(uint8_t *p, uint8_t &plen) {
     p[51] = ck;
     memcpy(p + 52, &cgot, 4);
     memcpy(p + 56, &ctot, 4);
-    plen = 60;
+    String id = ezgVirtualDeviceId();
+    uint8_t idLen = id.length() > 40 ? 40 : (uint8_t) id.length();
+    p[60] = idLen;
+    if (idLen) {
+        memcpy(p + 61, id.c_str(), idLen);
+    }
+    uint8_t typeLen = (uint8_t) strlen(EZG_BOARD_TYPE);
+    if (typeLen > 48) {
+        typeLen = 48;
+    }
+    p[61 + idLen] = typeLen;
+    memcpy(p + 62 + idLen, EZG_BOARD_TYPE, typeLen);
+    plen = (uint8_t) (62 + idLen + typeLen);
 }
 
 String jsonFromCompact(const uint8_t src[6], const uint8_t *p, uint8_t plen) {
@@ -1210,10 +1570,6 @@ String jsonFromCompact(const uint8_t src[6], const uint8_t *p, uint8_t plen) {
     uint16_t done = 0;
     if (plen >= 43) {
         memcpy(&done, p + 41, 2);
-        if (done) {
-            doc["completed_command_id"] = done;
-            doc["received_command_id"] = done;
-        }
     }
     JsonObject conn = doc["connectivity"].to<JsonObject>();
     JsonObject cur = conn["current"].to<JsonObject>();
@@ -1282,6 +1638,36 @@ String jsonFromCompact(const uint8_t src[6], const uint8_t *p, uint8_t plen) {
             st["chunk_total"] = tot;
         }
     }
+    String boardType = "Heltec Wireless Stick Lite V3";
+    String deviceId;
+    if (plen > 61) {
+        uint8_t idLen = p[60];
+        if (idLen > 40) {
+            idLen = 40;
+        }
+        if (plen >= 62 + idLen) {
+            if (idLen > 0) {
+                deviceId = String((const char *) (p + 61)).substring(0, idLen);
+            }
+            uint8_t typeLen = p[61 + idLen];
+            if (typeLen > 48) {
+                typeLen = 48;
+            }
+            if (typeLen > 0 && plen >= 62 + idLen + typeLen) {
+                boardType = String((const char *) (p + 62 + idLen)).substring(0, typeLen);
+            }
+        }
+    }
+    doc["board_type"] = boardType;
+    if (deviceId.length()) {
+        JsonArray devices = doc["virtual_devices"].to<JsonArray>();
+        JsonObject device = devices.add<JsonObject>();
+        device["id"] = deviceId;
+        if (done) {
+            device["completed_command_id"] = done;
+            device["received_command_id"] = done;
+        }
+    }
     doc["relayed_by"] = hardwareId;
     String out;
     serializeJson(doc, out);
@@ -1297,6 +1683,7 @@ void handleUp(const LoraHdr &hdr, const uint8_t *plain, uint8_t plen, uint8_t ho
         touchPeer(hdr.src, (uint8_t) (hopsToGw + 1), parentRssi, gwEpoch)->child = true;
     }
     lastRadioOkMs = millis();
+    childListenUntil = millis() + HB_LISTEN_MS;
     sendAck(hdr.src, hdr.pkt);
     if (loraLinkIsGateway()) {
         String json = jsonFromCompact(hdr.src, plain, plen);
@@ -1360,6 +1747,13 @@ void onRx(const uint8_t *frame, int len, int rssi) {
     }
     statsRx++;
     lastRadioOkMs = millis();
+    if (haveParent && macEq(hdr.src, parentMac)) {
+        lastHeardParentMs = millis();
+        Peer *parent = findPeer(parentMac);
+        if (parent != nullptr) {
+            parent->heardMs = lastHeardParentMs;
+        }
+    }
     if (!ours(hdr.dst) && hdr.type != T_BEACON && hdr.type != T_PROBE) {
         if (hdr.type == T_DOWN || hdr.type == T_OTA || hdr.type == T_UP || hdr.type == T_CHUNK) {
             // fall through for relay if we are parent path
@@ -1425,31 +1819,60 @@ void onRx(const uint8_t *frame, int len, int rssi) {
         lastRadioOkMs = millis();
         if (plen >= 2) {
             uint16_t acked = (uint16_t) (plain[0] | (plain[1] << 8));
+            if (hbListening && acked == hbWaitPkt) {
+                hbListening = false;
+                hbRetryAt = 0;
+                logRadio("hb ack");
+            }
             onChunkAck(acked);
         }
     }
 }
 
-void processHbResponse(const uint8_t *src, JsonObjectConst data) {
+void processHbResponse(const uint8_t *src, JsonObjectConst data, int reportedOff) {
+    JsonDocument merged;
     JsonObjectConst cfg = data["config"].as<JsonObjectConst>();
-    if (!cfg.isNull()) {
+    bool haveCfg = !cfg.isNull();
+    if (haveCfg) {
+        merged.set(cfg);
+    }
+    String deviceId;
+    if (data["virtual_devices"].is<JsonArrayConst>()) {
+        JsonArray out = merged["virtual_devices"].to<JsonArray>();
+        for (JsonObjectConst vd : data["virtual_devices"].as<JsonArrayConst>()) {
+            JsonObject item = out.add<JsonObject>();
+            if (vd["id"].is<const char *>()) {
+                item["id"] = vd["id"];
+                if (!deviceId.length()) {
+                    deviceId = String(vd["id"].as<const char *>());
+                }
+            }
+            if (vd["config"].is<JsonObjectConst>()) {
+                item["config"] = vd["config"];
+            }
+            if (vd["open"].is<JsonObjectConst>()) {
+                uint32_t cmd = vd["open"]["command_id"] | 0;
+                uint8_t p[4] = {
+                    (uint8_t) cmd, (uint8_t) (cmd >> 8), (uint8_t) (cmd >> 16), (uint8_t) (cmd >> 24)
+                };
+                sendDown(src, D_OPEN, p, 4);
+                logRadioNum("open queued ", (int) cmd);
+            }
+        }
+    }
+    if (haveCfg || merged["virtual_devices"].is<JsonArrayConst>()) {
         String js;
-        serializeJson(cfg, js);
+        serializeJson(merged, js);
         Serial.print("EZG config json ");
         Serial.println((int) js.length());
-        if (js.length() > 2) {
-            chunkTxBegin(src, LORA_CHUNK_KIND_CONFIG, (const uint8_t *) js.c_str(), (uint32_t) js.length());
+        if (js.length() > 2 && js.length() <= LORA_CHUNK_MAX_RAM) {
+            uint32_t crc = loraChunkCrc32((const uint8_t *) js.c_str(), (size_t) js.length());
+            if (!configDelivered(src, crc, (uint32_t) js.length())) {
+                chunkTxBegin(src, LORA_CHUNK_KIND_CONFIG, (const uint8_t *) js.c_str(), (uint32_t) js.length());
+            }
         }
     } else if (!data["config"].isNull()) {
         Serial.println("EZG config not object");
-    }
-    if (data["open"] | false) {
-        uint32_t cmd = data["command_id"] | 0;
-        uint8_t p[4] = {
-            (uint8_t) cmd, (uint8_t) (cmd >> 8), (uint8_t) (cmd >> 16), (uint8_t) (cmd >> 24)
-        };
-        sendDown(src, D_OPEN, p, 4);
-        logRadioNum("open queued ", (int) cmd);
     }
     if (data["scan"] | false) {
         sendDown(src, D_SCAN, nullptr, 0);
@@ -1468,38 +1891,247 @@ void processHbResponse(const uint8_t *src, JsonObjectConst data) {
     if (wifiIv < 2) {
         wifiIv = wifiHeartbeatSeconds;
     }
-    uint8_t ivb[4] = {
-        (uint8_t) loraIv, (uint8_t) (loraIv >> 8),
-        (uint8_t) wifiIv, (uint8_t) (wifiIv >> 8)
-    };
-    sendDown(src, D_INTERVAL, ivb, 4);
+    uint8_t ivb[52];
+    memset(ivb, 0, sizeof(ivb));
+    ivb[0] = (uint8_t) loraIv;
+    ivb[1] = (uint8_t) (loraIv >> 8);
+    ivb[2] = (uint8_t) wifiIv;
+    ivb[3] = (uint8_t) (wifiIv >> 8);
+    uint8_t ivn = 4;
+    if (deviceId.length()) {
+        uint8_t idLen = deviceId.length() > 40 ? 40 : (uint8_t) deviceId.length();
+        memcpy(ivb + 4, deviceId.c_str(), idLen);
+        ivn = (uint8_t) (4 + idLen);
+    }
+    sendDown(src, D_INTERVAL, ivb, ivn);
     JsonObjectConst fw = data["firmware"].as<JsonObjectConst>();
-    if (!fw.isNull() && otaActive < loraOtaMax) {
-        otaHold.active = true;
-        memcpy(otaHold.dst, src, 6);
-        otaHold.total = fw["size"] | 0;
-        otaHold.offset = 0;
-        String ver = fw["version"].is<const char *>() ? String(fw["version"].as<const char *>()) : "";
-        String sum = fw["checksum"].is<const char *>() ? String(fw["checksum"].as<const char *>()) : "";
-        String url = fw["url"].is<const char *>() ? String(fw["url"].as<const char *>()) : "";
-        strncpy(otaHold.version, ver.c_str(), 16);
-        otaHold.version[16] = 0;
-        strncpy(otaHold.checksum, sum.c_str(), 64);
-        otaHold.checksum[64] = 0;
-        strncpy(otaHold.url, url.c_str(), 159);
-        otaHold.url[159] = 0;
+    if (fw.isNull()) {
+        return;
+    }
+    uint32_t total = fw["size"] | 0;
+    String ver = fw["version"].is<const char *>() ? String(fw["version"].as<const char *>()) : "";
+    String sum = fw["checksum"].is<const char *>() ? String(fw["checksum"].as<const char *>()) : "";
+    String url = fw["url"].is<const char *>() ? String(fw["url"].as<const char *>()) : "";
+    if (!ver.length() || !url.length() || total == 0) {
+        return;
+    }
+    bool sameSlot = otaHold.active && macEq(otaHold.dst, src) && otaHold.total == total
+        && strncmp(otaHold.version, ver.c_str(), 16) == 0;
+    if (sameSlot) {
+        if (reportedOff >= 0) {
+            uint32_t leaf = (uint32_t) reportedOff;
+            if (leaf > otaHold.total) {
+                leaf = 0;
+            }
+            if (leaf >= otaHold.total && otaHold.total > 0) {
+                otaHold.active = false;
+                otaHold.ready = false;
+                otaHold.waitAck = false;
+                otaHold.fetchQueued = false;
+                otaHold.fetchGen++;
+                otaActive = otaActive > 0 ? otaActive - 1 : 0;
+                return;
+            }
+            if (otaHold.fetchQueued && leaf < otaHold.offset) {
+                Serial.println("EZG chunk fw align");
+                otaSeek(leaf);
+            } else if (!otaHold.fetchQueued) {
+                if (otaHold.waitAck) {
+                    uint32_t end = otaHold.offset + otaHold.waitLen;
+                    if (leaf == otaHold.offset) {
+                        return;
+                    }
+                    if (leaf == end) {
+                        onFwAck(otaHold.waitPkt);
+                        return;
+                    }
+                }
+                if (leaf != otaHold.offset) {
+                    Serial.println("EZG chunk fw align");
+                    otaSeek(leaf);
+                }
+            }
+        }
+        return;
+    }
+    if (reportedOff >= (int) total) {
+        return;
+    }
+    bool replacing = otaHold.active && macEq(otaHold.dst, src);
+    if (!replacing && otaActive >= loraOtaMax) {
+        return;
+    }
+    if (!replacing) {
         otaActive++;
-        uint8_t meta[7 + 16 + 64];
-        memset(meta, 0, sizeof(meta));
-        uint32_t sz = otaHold.total;
-        memcpy(meta, &sz, 4);
-        uint16_t chunk = loraChunkMaxData((uint16_t) otaLoraChunk);
-        memcpy(meta + 4, &chunk, 2);
-        meta[6] = (uint8_t) strlen(otaHold.version);
-        memcpy(meta + 7, otaHold.version, meta[6]);
-        memcpy(meta + 7 + meta[6], otaHold.checksum, 64);
-        sendDown(src, D_FW, meta, (uint8_t) (7 + meta[6] + 64));
-        enqueueJob(P_OTA, JOB_OTA, src, String(otaHold.url), 0, otaLoraChunk);
+    }
+    otaHold.active = true;
+    memcpy(otaHold.dst, src, 6);
+    otaHold.total = total;
+    uint32_t startOff = 0;
+    if (reportedOff > 0 && (uint32_t) reportedOff < total) {
+        startOff = (uint32_t) reportedOff;
+    }
+    otaHold.offset = startOff;
+    otaHold.len = 0;
+    otaHold.ready = false;
+    otaHold.waitAck = false;
+    otaHold.waitLen = 0;
+    otaHold.fetchQueued = false;
+    otaHold.fetchMs = 0;
+    otaHold.fetchGen++;
+    strncpy(otaHold.version, ver.c_str(), 16);
+    otaHold.version[16] = 0;
+    strncpy(otaHold.checksum, sum.c_str(), 64);
+    otaHold.checksum[64] = 0;
+    strncpy(otaHold.url, url.c_str(), 159);
+    otaHold.url[159] = 0;
+    uint8_t meta[7 + 16 + 64];
+    memset(meta, 0, sizeof(meta));
+    memcpy(meta, &total, 4);
+    uint16_t chunk = loraChunkMaxData((uint16_t) otaLoraChunk);
+    memcpy(meta + 4, &chunk, 2);
+    meta[6] = (uint8_t) strlen(otaHold.version);
+    memcpy(meta + 7, otaHold.version, meta[6]);
+    memcpy(meta + 7 + meta[6], otaHold.checksum, 64);
+    sendDown(src, D_FW, meta, (uint8_t) (7 + meta[6] + 64));
+    if (!queueOtaFetch(startOff)) {
+        Serial.println("EZG chunk fw queue fail");
+    }
+}
+
+void storeOwnHb(bool ok, const String &json) {
+    char *copy = nullptr;
+    if (ok && json.length() > 0) {
+        copy = (char *) malloc(json.length() + 1);
+        if (copy != nullptr) {
+            memcpy(copy, json.c_str(), json.length() + 1);
+        }
+    }
+    char *old = nullptr;
+    portENTER_CRITICAL(&ownHbMux);
+    old = ownHbBody;
+    ownHbBody = copy;
+    ownHbOk = ok && copy != nullptr;
+    ownHbReady = true;
+    portEXIT_CRITICAL(&ownHbMux);
+    free(old);
+}
+
+void pollUplink() {
+    bool held = chunkAckListen() || otaFwAckListen();
+    if (held) {
+        if (uplinkPauseStart == 0) {
+            uplinkPauseStart = millis();
+        }
+        return;
+    }
+    if (uplinkPauseStart != 0) {
+        unsigned long paused = millis() - uplinkPauseStart;
+        uplinkPauseStart = 0;
+        if (paused > 0) {
+            if (portalMissArmed) {
+                portalMissDeadline += paused;
+            }
+            if (hbListening) {
+                hbListenDeadline += paused;
+            }
+            if (hbRetryAt != 0) {
+                hbRetryAt += paused;
+            }
+            if (hbIntervalStart != 0) {
+                hbIntervalStart += paused;
+            }
+        }
+    }
+    if (loraLinkIsGateway() || !haveParent || !loraKeysHaveSite()) {
+        return;
+    }
+    if (portalMissArmed && deadlineDue(portalMissDeadline)) {
+        dropParentForPortal();
+        return;
+    }
+    if (hbListening && deadlineDue(hbListenDeadline)) {
+        hbListening = false;
+        logRadio("hb miss");
+        if (hbExtrasLeft > 0) {
+            hbExtrasLeft--;
+            hbRetryAt = millis() + missBackoffMs();
+        } else {
+            hbRetryAt = 0;
+        }
+    }
+    if (hbRetryAt != 0 && deadlineDue(hbRetryAt)) {
+        hbRetryAt = 0;
+        loraLinkSendOwnHeartbeat();
+        return;
+    }
+    if (hbListening || hbRetryAt != 0) {
+        return;
+    }
+    unsigned long intervalMs = (unsigned long) loraHeartbeatSeconds * 1000UL;
+    if (intervalMs < 2000UL) {
+        intervalMs = 2000UL;
+    }
+    if (hbIntervalStart == 0 || millis() - hbIntervalStart >= intervalMs) {
+        hbExtrasLeft = 2;
+        hbIntervalStart = millis();
+        loraLinkSendOwnHeartbeat();
+    }
+}
+
+void serviceBeacon() {
+    if (!loraLinkIsGateway() || hbListening) {
+        return;
+    }
+    if (chunkAckListen() || otaFwAckListen()) {
+        return;
+    }
+    if (millis() - lastTxMs < 150UL) {
+        return;
+    }
+    if (childListenUntil != 0 && (long) (millis() - childListenUntil) < 0) {
+        return;
+    }
+    if (nextBeaconAt == 0) {
+        nextBeaconAt = millis() + beaconOffsetMs();
+        return;
+    }
+    if (!deadlineDue(nextBeaconAt)) {
+        return;
+    }
+    if (sendBeacon()) {
+        lastBeaconMs = millis();
+        unsigned long intervalMs = (unsigned long) loraHeartbeatSeconds * 1000UL;
+        if (intervalMs < 2000UL) {
+            intervalMs = 2000UL;
+        }
+        int multiple = loraBeaconMultiple;
+        if (multiple < 1) {
+            multiple = 1;
+        }
+        nextBeaconAt = millis() + (unsigned long) multiple * intervalMs + beaconOffsetMs();
+    } else {
+        nextBeaconAt = millis() + missBackoffMs();
+    }
+}
+
+void serviceProbe() {
+    if (loraLinkIsGateway() || haveParent || siteId <= 0 || hbListening) {
+        return;
+    }
+    if (nextProbeAt != 0 && !deadlineDue(nextProbeAt)) {
+        return;
+    }
+    if (sendProbe()) {
+        lastProbeMs = millis();
+        int span = loraDiscMaxMs - loraDiscMinMs;
+        if (span < 1) {
+            span = 1;
+        }
+        nextProbeAt = millis() + 2000UL + (unsigned long) loraDiscMinMs
+            + (esp_random() % (unsigned) span);
+    } else {
+        nextProbeAt = millis() + missBackoffMs();
     }
 }
 
@@ -1510,7 +2142,7 @@ void httpWorker(void *) {
             continue;
         }
         if (job.kind == JOB_OTA) {
-            if (job.body != nullptr) {
+            if (job.body != nullptr && job.gen == otaHold.fetchGen && otaHold.active) {
                 String url = job.body;
                 url += url.indexOf('?') >= 0 ? '&' : '?';
                 url += "offset=";
@@ -1520,27 +2152,50 @@ void httpWorker(void *) {
                 int got = 0;
                 int want = job.otaLen > 0 ? job.otaLen : otaLoraChunk;
                 uint16_t cap = loraChunkMaxData((uint16_t) otaLoraChunk);
+                if (cap > sizeof(otaHold.data)) {
+                    cap = sizeof(otaHold.data);
+                }
                 if (want > (int) cap) {
                     want = cap;
                 }
                 Serial.print("EZG http OTA ");
                 Serial.println(job.otaOff);
-                if (ezgHttpGetBytes(url, otaHold.data, want, got) && got > 0) {
+                if (job.gen == otaHold.fetchGen && otaHold.active
+                    && ezgHttpGetBytes(url, otaHold.data, want, got) && got > 0) {
                     otaHold.len = (uint16_t) got;
                     otaHold.offset = (uint32_t) job.otaOff;
                     otaHold.ready = true;
+                    otaHold.waitAck = false;
+                    otaHold.fetchQueued = false;
+                } else if (job.gen == otaHold.fetchGen) {
+                    otaHold.fetchQueued = false;
+                    otaHold.fetchMs = millis();
+                    Serial.println("EZG http OTA fail");
                 }
             }
             free(job.body);
             continue;
         }
         JsonDocument resp;
-        String url = job.kind == JOB_SETUP ? ezgPortalUrl("/api/setup/complete") : ezgPortalUrl("/api/heartbeat");
+        String url = ezgPortalUrl("/api/heartbeat");
+        const char *label = "heartbeat";
+        if (job.kind == JOB_SETUP) {
+            url = ezgPortalUrl("/api/setup/complete");
+            label = "setup";
+        } else if (job.kind == JOB_LIST) {
+            url = ezgPortalUrl("/api/accesstag-list");
+            label = "accesstag-list";
+        }
         Serial.print("EZG http POST ");
-        Serial.println(job.kind == JOB_SETUP ? "setup" : "heartbeat");
+        Serial.println(label);
         bool ok = job.body != nullptr && ezgHttpPostJson(url, String(job.body), resp);
+        bool local = job.kind == JOB_HB && macEq(job.src, selfMac);
         if (ok && (resp["success"] | false)) {
-            if (job.kind == JOB_SETUP) {
+            if (local) {
+                String js;
+                serializeJson(resp, js);
+                storeOwnHb(true, js);
+            } else if (job.kind == JOB_SETUP) {
                 String js;
                 JsonDocument cfg;
                 cfg["site_id"] = resp["data"]["board_id"] | 0;
@@ -1555,10 +2210,35 @@ void httpWorker(void *) {
                 }
                 serializeJson(cfg, js);
                 sendDown(job.src, D_SETUP_OK, (const uint8_t *) js.c_str(), (uint8_t) js.length());
+            } else if (job.kind == JOB_LIST) {
+                String js;
+                serializeJson(resp, js);
+                if (js.length() > 2 && js.length() <= LORA_CHUNK_MAX_RAM) {
+                    chunkTxBegin(job.src, LORA_CHUNK_KIND_LIST, (const uint8_t *) js.c_str(), (uint32_t) js.length());
+                }
             } else if (resp["data"].is<JsonObject>()) {
-                processHbResponse(job.src, resp["data"].as<JsonObject>());
+                int reportedOff = -1;
+                if (job.body != nullptr) {
+                    const char *mark = strstr(job.body, "\"ota_offset\"");
+                    if (mark != nullptr) {
+                        const char *colon = strchr(mark, ':');
+                        if (colon != nullptr) {
+                            reportedOff = atoi(colon + 1);
+                        }
+                    }
+                }
+                processHbResponse(job.src, resp["data"].as<JsonObject>(), reportedOff);
             }
         } else {
+            if (job.kind == JOB_HB && job.tries == 0) {
+                job.tries = 1;
+                if (xQueueSend(httpQ, &job, 0) == pdTRUE) {
+                    continue;
+                }
+            }
+            if (local) {
+                storeOwnHb(false, String());
+            }
             Serial.println("EZG http fail");
         }
         free(job.body);
@@ -1572,19 +2252,21 @@ void loraLinkBegin() {
     memset(peers, 0, sizeof(peers));
     memset(heard, 0, sizeof(heard));
     memset(&otaHold, 0, sizeof(otaHold));
+    memset(cfgDone, 0, sizeof(cfgDone));
     loraChunkRxReset(chunkRx);
     chunkTxClearLocked();
     chunkPendClear();
     hopsToGw = 255;
-    float mhz = loraFreqHz > 0 ? (loraFreqHz / 1000000.0f) : 915.0f;
-    radioUp = loraRadioBegin(mhz);
-    if (!radioUp) {
-        return;
-    }
     httpQ = xQueueCreate(6, sizeof(HttpJob));
     downQ = xQueueCreate(8, sizeof(DownJob));
     if (httpQ != nullptr) {
         xTaskCreatePinnedToCore(httpWorker, "ezghttp", 8192, nullptr, 1, nullptr, 0);
+    }
+    float mhz = loraFreqHz > 0 ? (loraFreqHz / 1000000.0f) : 915.0f;
+    radioUp = loraRadioBegin(mhz);
+    if (!radioUp) {
+        logRadio("radio down");
+        return;
     }
     logRadio("radio up");
 }
@@ -1592,6 +2274,12 @@ void loraLinkBegin() {
 void loraLinkApplyConfig(JsonObjectConst cfg) {
     if (cfg["lora_frequency_hz"].is<int>()) {
         loraFreqHz = cfg["lora_frequency_hz"].as<int>();
+    }
+    if (cfg["lora_rssi_floor_dbm"].is<int>()) {
+        int v = cfg["lora_rssi_floor_dbm"].as<int>();
+        if (v >= -140 && v <= -40) {
+            loraRssiFloor = v;
+        }
     }
     if (cfg["isolation_misses"].is<int>()) {
         isolationMisses = cfg["isolation_misses"].as<int>();
@@ -1613,6 +2301,12 @@ void loraLinkApplyConfig(JsonObjectConst cfg) {
     }
     if (cfg["lora_route_expiry_intervals"].is<int>()) {
         loraRouteExpiry = cfg["lora_route_expiry_intervals"].as<int>();
+    }
+    if (cfg["lora_beacon_interval_multiple"].is<int>()) {
+        int multiple = cfg["lora_beacon_interval_multiple"].as<int>();
+        if (multiple >= 1 && multiple <= 10) {
+            loraBeaconMultiple = multiple;
+        }
     }
     if (cfg["ota_max_per_gateway"].is<int>()) {
         loraOtaMax = cfg["ota_max_per_gateway"].as<int>();
@@ -1745,14 +2439,20 @@ bool loraLinkSendOwnHeartbeat() {
     if (!haveParent || !loraKeysHaveSite()) {
         return false;
     }
-    uint8_t p[64];
+    uint8_t p[128];
     uint8_t plen = 0;
     packOwnHb(p, plen);
-    delay((int) (esp_random() % (unsigned) (loraStaggerMs > 1 ? loraStaggerMs : 1)));
     bool ok = sendFrame(T_UP, parentMac, 0, p, plen, true);
     lastHbLoraMs = millis();
     if (ok) {
+        hbWaitPkt = lastSentPkt;
+        hbListening = true;
+        hbListenDeadline = millis() + HB_LISTEN_MS;
         logRadio("up radio_ok");
+    } else {
+        hbListening = false;
+        hbRetryAt = millis() + missBackoffMs();
+        logRadio("up defer");
     }
     return ok;
 }
@@ -1832,6 +2532,41 @@ int loraLinkHops() {
     return hopsToGw > 15 ? -1 : hopsToGw;
 }
 
+void loraLinkPollUplink() {
+    if (!radioUp) {
+        return;
+    }
+    pollUplink();
+}
+
+void loraLinkPollOwnHeartbeat() {
+    bool ready = false;
+    bool ok = false;
+    char *body = nullptr;
+    portENTER_CRITICAL(&ownHbMux);
+    if (ownHbReady) {
+        ready = true;
+        ok = ownHbOk;
+        body = ownHbBody;
+        ownHbBody = nullptr;
+        ownHbReady = false;
+    }
+    portEXIT_CRITICAL(&ownHbMux);
+    if (!ready) {
+        return;
+    }
+    ezgApplyOwnHeartbeat(ok, body);
+    free(body);
+}
+
+bool loraLinkEnqueueOwnHeartbeat(const String &json) {
+    return enqueueJob(P_HB, JOB_HB, selfMac, json, 0, 0);
+}
+
+bool loraLinkUplinkBusy() {
+    return hbListening || (childListenUntil != 0 && (long) (millis() - childListenUntil) < 0);
+}
+
 void loraLinkService() {
     if (!radioUp) {
         return;
@@ -1841,8 +2576,14 @@ void loraLinkService() {
     if (n > 0) {
         onRx(buf, n, loraRadioRssi());
     }
-    drainDown();
-    drainChunks();
+    pollUplink();
+    if (!hbListening) {
+        drainDown();
+    }
+    serviceBeacon();
+    if (!hbListening) {
+        drainChunks();
+    }
     unsigned long ttl = (unsigned long) loraRouteExpiry * (unsigned long) loraHeartbeatSeconds * 1000UL;
     if (haveParent && ttl > 0 && lastHeardParentMs > 0 && millis() - lastHeardParentMs > ttl) {
         logRadio("parent loss");
@@ -1852,23 +2593,17 @@ void loraLinkService() {
     if (loraLinkIsGateway()) {
         haveParent = false;
         hopsToGw = 0;
-        if (!chunkTxBusy() && millis() - lastTxMs >= 150UL && millis() - lastBeaconMs > 3000UL) {
-            lastBeaconMs = millis();
-            sendBeacon();
-        }
-        if (otaHold.active && !otaHold.ready && otaActive > 0 && otaHold.url[0] && otaHold.offset < otaHold.total) {
-            // worker fetches; kick next chunk after TX
+        if (otaHold.active && !otaHold.ready && !otaHold.waitAck && !otaHold.fetchQueued
+            && otaHold.url[0] && otaHold.offset < otaHold.total
+            && (otaHold.fetchMs == 0 || millis() - otaHold.fetchMs > 4000UL)) {
+            if (!queueOtaFetch(otaHold.offset)) {
+                Serial.println("EZG chunk fw queue fail");
+            } else {
+                Serial.println("EZG chunk fw refetch");
+            }
         }
         return;
     }
-    if (siteId > 0 && !haveParent && millis() - lastProbeMs > 2000UL) {
-        int span = loraDiscMaxMs - loraDiscMinMs;
-        if (span < 1) {
-            span = 1;
-        }
-        delay(loraDiscMinMs + (int) (esp_random() % (unsigned) span));
-        lastProbeMs = millis();
-        sendProbe();
-    }
+    serviceProbe();
 }
 

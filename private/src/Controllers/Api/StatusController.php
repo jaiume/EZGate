@@ -19,8 +19,16 @@ class StatusController
     {
         $query = $request->getQueryParams();
         $token = $this->extractToken($request, $query);
-        $identifier = (string) ($query['identifier'] ?? $query['hardware_id'] ?? '');
+        $identifier = (string) ($query['identifier'] ?? '');
         return JsonResponder::fromService($this->statusService->status($token, $identifier));
+    }
+
+    public function readerStatus(ServerRequestInterface $request, ResponseInterface $response): ResponseInterface
+    {
+        $query = $request->getQueryParams();
+        $token = $this->extractToken($request, $query);
+        $identifier = (string) ($query['identifier'] ?? '');
+        return JsonResponder::fromService($this->statusService->readerStatus($token, $identifier));
     }
 
     /**

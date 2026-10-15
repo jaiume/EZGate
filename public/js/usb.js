@@ -7,6 +7,7 @@ if (!page) {
 
 const csrf = page.dataset.csrf || '';
 const usbConfig = JSON.parse(page.dataset.usb || '{}');
+const usbSites = JSON.parse(page.dataset.sites || '[]');
 const statusEl = document.getElementById('usb-status');
 const modeBadge = document.getElementById('usb-mode-badge');
 const logEl = document.getElementById('usb-log');
@@ -32,6 +33,9 @@ let usbSiteId = 0;
 let usbSiteName = '';
 let usbHardwareId = '';
 let usbFriendlyName = '';
+let usbBoardTypeName = '';
+let pendingBoardType = null;
+let lastDetectedChip = '';
 let busy = false;
 let cdc = null;
 let cdcReady = false;
@@ -144,8 +148,10 @@ function setActionButtonsEnabled(enabled) {
     document.querySelectorAll('.usb-board-action').forEach((btn) => {
         const action = btn.dataset.action;
         const needsCdcReady = action === 'clear' || action === 'config' || action === 'keys';
+        const needsSite = action === 'config' && usbSites.length === 0;
         btn.disabled = !enabled
             || (action === 'load' && noFirmware)
+            || needsSite
             || (needsCdcReady && !cdcCanCommand());
     });
 }
@@ -166,6 +172,27 @@ function rememberBoard(board) {
     usbSiteName = String(board.site_name || '');
     usbHardwareId = String(board.hardware_id || '');
     usbFriendlyName = String(board.friendly_name || '');
+    usbBoardTypeName = String(board.board_type_name || '');
+    filterFirmwareOptions(Number(board.board_type_id || 0));
+}
+
+function filterFirmwareOptions(boardTypeId) {
+    const select = document.getElementById('load_firmware_id');
+    if (!select || boardTypeId <= 0) {
+        return;
+    }
+    let first = null;
+    Array.from(select.options).forEach((option) => {
+        const match = Number(option.dataset.boardType || 0) === boardTypeId;
+        option.hidden = !match;
+        option.disabled = !match;
+        if (match && first === null) {
+            first = option;
+        }
+    });
+    if (first) {
+        select.value = first.value;
+    }
 }
 
 function cdcWaitingMessage() {
@@ -190,19 +217,29 @@ function actionButtonsHtml() {
     if (usbMode === 'cdc') {
         const waiting = !cdcCanCommand();
         const disabled = waiting ? ' disabled title="Waiting for the board to answer CDC commands"' : '';
-        const configBtn = usbSiteId > 0
-            ? '<button class="btn btn-sm btn-outline-primary usb-board-action" type="button" data-action="config"' + disabled + '>Load config</button>'
+        const siteOptions = usbSites.map((site) => {
+            const selected = Number(site.id) === usbSiteId ? ' selected' : '';
+            return '<option value="' + Number(site.id) + '"' + selected + '>' + escapeHtml(site.name) + '</option>';
+        }).join('');
+        const noSites = usbSites.length === 0;
+        const pushDisabled = waiting || noSites
+            ? ' disabled title="' + (noSites ? 'Add a site first' : 'Waiting for the board to answer CDC commands') + '"'
             : '';
         const help = waiting
             ? cdcWaitingMessage()
-            : (usbSiteId > 0
-                ? 'The board answered EZGUSB and is waiting for commands. Clear config, overwrite site config, or write LoRa keys. Firmware loads are in Download.'
-                : 'The board answered EZGUSB and is waiting for commands. Clear config or write LoRa keys. Load config needs a site assignment. Firmware loads are in Download.');
+            : 'Choose a site, then assign this board and write that site\'s Wi-Fi and LoRa config over USB.';
         return `
             <p class="small text-secondary mb-2">${help}</p>
+            <div class="mb-2" style="max-width: 24rem;">
+                <label class="form-label mb-1" for="usb-site-id">Site</label>
+                <select class="form-select form-select-sm" id="usb-site-id"${noSites ? ' disabled' : ''}>
+                    <option value="">Choose a site</option>
+                    ${siteOptions}
+                </select>
+            </div>
             <div class="d-flex flex-nowrap gap-2">
                 <button class="btn btn-sm btn-outline-danger usb-board-action" type="button" data-action="clear"${disabled}>Clear config</button>
-                ${configBtn}
+                <button class="btn btn-sm btn-primary usb-board-action" type="button" data-action="config"${pushDisabled}>Assign and push config</button>
                 <button class="btn btn-sm btn-outline-primary usb-board-action" type="button" data-action="keys"${disabled}>Load LoRa keys</button>
             </div>`;
     }
@@ -219,6 +256,19 @@ function renderDock() {
         return;
     }
     if (!usbBoardId) {
+        if (pendingBoardType) {
+            usbDock.innerHTML = `
+                <div class="border-top px-3 py-3">
+                    <p class="small mb-2"><code>${escapeHtml(pendingBoardType.hardwareId)}</code> is not in inventory.</p>
+                    <button class="btn btn-sm btn-primary" type="button" id="usb-choose-type">Choose board type</button>
+                </div>`;
+            const choose = document.getElementById('usb-choose-type');
+            if (choose) {
+                choose.addEventListener('click', openBoardTypeModal);
+            }
+            syncUsbButtons();
+            return;
+        }
         const waiting = usbMode === 'cdc'
             ? cdcWaitingMessage()
             : usbMode === 'download'
@@ -233,11 +283,15 @@ function renderDock() {
     }
     const label = usbFriendlyName || usbHardwareId;
     const siteLabel = usbSiteId > 0 ? (usbSiteName || ('Site ' + usbSiteId)) : 'Unassigned';
+    const typeBadge = usbBoardTypeName
+        ? `<span class="badge text-bg-light border">${escapeHtml(usbBoardTypeName)}</span>`
+        : '';
     usbDock.innerHTML = `
         <div class="border-top px-3 py-3" id="usb-board-card" data-board-id="${usbBoardId}">
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 <strong>${escapeHtml(label)}</strong>
                 <code>${escapeHtml(usbHardwareId)}</code>
+                ${typeBadge}
                 <span class="badge ${usbSiteId > 0 ? 'text-bg-info' : 'text-bg-secondary'}">${escapeHtml(siteLabel)}</span>
             </div>
             ${actionButtonsHtml()}
@@ -255,6 +309,8 @@ function clearUsbBoard() {
     usbSiteName = '';
     usbHardwareId = '';
     usbFriendlyName = '';
+    usbBoardTypeName = '';
+    pendingBoardType = null;
     identifyInFlight = '';
     cdcReady = false;
     renderDock();
@@ -291,9 +347,10 @@ async function withLoader(port, work) {
     try {
         const chip = await loader.main();
         log('Connected to ' + chip);
+        lastDetectedChip = String(chip || '');
         const mac = await loader.chip.readMac(loader);
         log('MAC ' + mac);
-        await work(loader, mac);
+        await work(loader, mac, chip);
         await loader.after('no_reset');
         return mac;
     } finally {
@@ -305,7 +362,7 @@ async function withLoader(port, work) {
     }
 }
 
-async function postJson(url, fields) {
+async function postFields(url, fields) {
     const body = new FormData();
     body.append('_csrf', csrf);
     Object.entries(fields).forEach(([key, value]) => {
@@ -317,7 +374,11 @@ async function postJson(url, fields) {
         headers: { Accept: 'application/json' },
         credentials: 'same-origin',
     });
-    const payload = await response.json();
+    return response.json();
+}
+
+async function postJson(url, fields) {
+    const payload = await postFields(url, fields);
     if (!payload.success) {
         throw new Error(payload.message || 'Request failed.');
     }
@@ -354,9 +415,26 @@ function cdcBootState(buf) {
     return 'unknown';
 }
 
+function parseHandshake(buf) {
+    const lines = cdcText(buf).split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        const match = line.match(/^EZGUSB ok\s+(\S+)\s+([0-9A-Fa-f]{12})(?:\s+(.+))?$/i);
+        if (!match) {
+            continue;
+        }
+        return {
+            version: match[1],
+            hardwareId: match[2].toUpperCase(),
+            boardType: (match[3] || '').trim(),
+        };
+    }
+    return null;
+}
+
 function parseBoardId(buf) {
-    const handshake = cdcText(buf).match(/EZGUSB ok\s+\S+\s+([0-9A-Fa-f]{12})/i);
-    return handshake ? handshake[1].toUpperCase() : '';
+    const handshake = parseHandshake(buf);
+    return handshake ? handshake.hardwareId : '';
 }
 
 function trimCdcBuf() {
@@ -440,16 +518,21 @@ function considerCdcReady(buf) {
 }
 
 async function maybeIdentifyFromCdc(buf) {
-    const hardwareId = parseBoardId(buf);
+    const handshake = parseHandshake(buf);
+    if (!handshake) {
+        return;
+    }
+    const hardwareId = handshake.hardwareId;
+    const boardType = handshake.boardType;
     if (!hardwareId || hardwareId === identifyInFlight) {
         return;
     }
-    if (usbHardwareId && hardwareId === usbHardwareId) {
+    if (usbHardwareId && hardwareId === usbHardwareId && (!boardType || usbBoardTypeName === boardType)) {
         return;
     }
     identifyInFlight = hardwareId;
     try {
-        await identifyFromHardwareId(hardwareId);
+        await identifyFromHardwareId(hardwareId, '', boardType);
     } catch (err) {
         log(err.message || String(err));
     }
@@ -512,9 +595,9 @@ function beginUsbRecover(reason) {
 }
 
 async function applyCdcOpenStatus() {
-    const id = parseBoardId(cdc ? cdc.buf : '');
-    if (id) {
-        await identifyFromHardwareId(id);
+    const handshake = parseHandshake(cdc ? cdc.buf : '');
+    if (handshake) {
+        await identifyFromHardwareId(handshake.hardwareId, '', handshake.boardType);
         return;
     }
     if (cdcReady) {
@@ -742,22 +825,41 @@ async function sendUsbLine(line, okNeedle) {
 async function applyIdentifiedBoard(result) {
     rememberBoard(result.data.board);
     renderDock();
+    const typeBit = usbBoardTypeName ? ' · ' + escapeHtml(usbBoardTypeName) : '';
     const siteBit = usbSiteId > 0
         ? ' on site ' + escapeHtml(usbSiteName || String(usbSiteId))
         : ' (unassigned)';
     if (usbMode === 'cdc' && !cdcReady) {
-        setStatus('CDC: matched <strong>' + escapeHtml(usbFriendlyName || usbHardwareId) + '</strong>' + siteBit + '. Waiting for firmware to answer commands…');
+        setStatus('CDC: matched <strong>' + escapeHtml(usbFriendlyName || usbHardwareId) + '</strong>' + typeBit + siteBit + '. Waiting for firmware to answer commands…');
         return;
     }
     const modeBit = usbMode === 'cdc' ? 'CDC ready' : usbMode === 'download' ? 'Download' : 'USB';
     setStatus(
-        modeBit + ': <strong>' + escapeHtml(usbFriendlyName || usbHardwareId) + '</strong>' + siteBit,
+        modeBit + ': <strong>' + escapeHtml(usbFriendlyName || usbHardwareId) + '</strong>' + typeBit + siteBit,
         'ok'
     );
 }
 
-async function identifyFromHardwareId(hardwareId) {
-    const result = await postJson('/usb/identify', { hardware_id: hardwareId });
+async function identifyFromHardwareId(hardwareId, boardType, suggestedType) {
+    const fields = { hardware_id: hardwareId };
+    if (boardType) {
+        fields.board_type = boardType;
+    }
+    const result = await postFields('/usb/identify', fields);
+    if (result.error && result.error.code === 'BOARD_TYPE_REQUIRED') {
+        pendingBoardType = {
+            hardwareId: (result.data && result.data.hardware_id) || hardwareId,
+            suggested: suggestedType || '',
+        };
+        openBoardTypeModal();
+        renderDock();
+        setStatus('Choose a board type for <strong>' + escapeHtml(pendingBoardType.hardwareId) + '</strong>. It is not in inventory yet.');
+        return;
+    }
+    if (!result.success) {
+        throw new Error(result.message || 'Request failed.');
+    }
+    pendingBoardType = null;
     await applyIdentifiedBoard(result);
 }
 
@@ -912,7 +1014,7 @@ async function flashFirmware(loader, firmwareId) {
         flashSize: manifest.flashSize || usbConfig.flashSize || '8MB',
         flashMode: manifest.flashMode || usbConfig.flashMode || 'qio',
         flashFreq: manifest.flashFreq || usbConfig.flashFreq || '80m',
-        eraseAll: false,
+        eraseAll: manifest.flashSize === '4MB',
         compress: true,
         reportProgress(_fileIndex, written, total) {
             setStatus('Writing firmware… ' + Math.round((written / total) * 100) + '%');
@@ -992,11 +1094,20 @@ async function loadConfig(boardId) {
     if (!await requireCdcReady()) {
         return;
     }
-    if (usbSiteId < 1) {
-        setStatus('Load config needs a board that is already on a site.', 'err');
+    const select = document.getElementById('usb-site-id');
+    const siteId = Number(select && select.value ? select.value : 0);
+    if (siteId < 1) {
+        setStatus('Choose a site before pushing config.', 'err');
         return;
     }
-    await runBusy('Loading site configuration over USB…', async () => {
+    const siteName = select && select.selectedOptions[0] ? select.selectedOptions[0].text : '';
+    await runBusy('Assigning the site and writing configuration…', async () => {
+        if (siteId !== usbSiteId) {
+            const moved = await postJson('/boards/' + boardId + '/move', { site_id: String(siteId) });
+            usbSiteId = siteId;
+            usbSiteName = siteName;
+            log(moved.message || 'Assigned to site');
+        }
         const cfgJson = await fetchJson('/boards/' + boardId + '/usb-config');
         const siteConfig = cfgJson.data.config;
         if (!siteConfig) {
@@ -1004,7 +1115,8 @@ async function loadConfig(boardId) {
         }
         await sendUsbLine('EZGCFG ' + JSON.stringify(siteConfig), 'EZGCFG ok');
         log('Site configuration stored');
-        setStatus('CDC: site configuration written.', 'ok');
+        setStatus('CDC: assigned to <strong>' + escapeHtml(usbSiteName || siteName) + '</strong> and configuration written.', 'ok');
+        renderDock();
     });
 }
 
@@ -1018,6 +1130,55 @@ async function loadLoraKeys(boardId) {
         await sendUsbLine('EZGKEY ' + cred, 'EZGKEY ok');
         log('LoRa credential stored');
         setStatus('CDC: LoRa keys written.', 'ok');
+    });
+}
+
+function openBoardTypeModal() {
+    const modalEl = document.getElementById('boardTypeModal');
+    const idEl = document.getElementById('boardTypeHardwareId');
+    const select = document.getElementById('board_type_choice');
+    if (!modalEl || !pendingBoardType || !window.bootstrap) {
+        return;
+    }
+    if (idEl) {
+        idEl.textContent = pendingBoardType.hardwareId;
+    }
+    if (select) {
+        const suggested = pendingBoardType.suggested || '';
+        const match = Array.from(select.options).some((option) => option.value === suggested);
+        select.value = match ? suggested : '';
+    }
+    window.bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+const boardTypeForm = document.getElementById('boardTypeForm');
+if (boardTypeForm) {
+    boardTypeForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!pendingBoardType || busy) {
+            return;
+        }
+        const select = document.getElementById('board_type_choice');
+        const boardType = select ? select.value : '';
+        if (!boardType) {
+            return;
+        }
+        busy = true;
+        syncUsbButtons();
+        try {
+            await identifyFromHardwareId(pendingBoardType.hardwareId, boardType);
+            const modalEl = document.getElementById('boardTypeModal');
+            if (window.bootstrap && modalEl) {
+                window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            }
+        } catch (err) {
+            setStatus(err.message || String(err), 'err');
+            log(err.message || String(err));
+        } finally {
+            busy = false;
+            syncUsbButtons();
+            renderDock();
+        }
     });
 }
 

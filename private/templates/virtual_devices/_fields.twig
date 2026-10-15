@@ -1,0 +1,49 @@
+<div class="mb-2">
+    <label class="form-label">Friendly name</label>
+    <input class="form-control form-control-sm" name="friendly_name" value="{{ device.friendly_name|default('') }}">
+</div>
+{% if device %}
+    {% set taken_relays = device.taken_relays %}
+    {% set taken_readers = device.taken_readers %}
+{% else %}
+    {% set taken_relays = board.taken_relays|default([]) %}
+    {% set taken_readers = board.taken_readers|default([]) %}
+{% endif %}
+<div class="mb-2">
+    <div class="form-label">Relays</div>
+    {% for n in 1..board.relay_count %}
+        {% set selected = false %}
+        {% set pulse = null %}
+        {% if device %}
+            {% set matched = device.relays|filter(relay => relay.relay == n) %}
+            {% set selected = matched is not empty %}
+            {% set pulse = selected ? (matched|first).pulse_duration_ms : null %}
+        {% endif %}
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="relays[]" value="{{ n }}" id="relay-{{ board.id }}-{{ device.id|default('new') }}-{{ n }}"{% if selected %} checked{% endif %}{% if n in taken_relays %} disabled{% endif %}>
+            <label class="form-check-label" for="relay-{{ board.id }}-{{ device.id|default('new') }}-{{ n }}">Relay {{ n }}{% if n in taken_relays %} (in use){% endif %}</label>
+        </div>
+        <div class="ms-4 mb-2">
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="pulse_mode[{{ n }}]" value="inherit" id="pulse-inherit-{{ board.id }}-{{ device.id|default('new') }}-{{ n }}"{% if pulse is null %} checked{% endif %}>
+                <label class="form-check-label" for="pulse-inherit-{{ board.id }}-{{ device.id|default('new') }}-{{ n }}">Inherit ({{ pulse_default }} ms if no site pulse)</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="pulse_mode[{{ n }}]" value="custom" id="pulse-custom-{{ board.id }}-{{ device.id|default('new') }}-{{ n }}"{% if pulse is not null %} checked{% endif %}>
+                <label class="form-check-label" for="pulse-custom-{{ board.id }}-{{ device.id|default('new') }}-{{ n }}">Custom</label>
+            </div>
+            <input class="form-control form-control-sm mt-1" style="max-width: 8rem;" type="number" min="50" max="10000" name="pulse_duration_ms[{{ n }}]" value="{{ pulse ?: pulse_default }}">
+        </div>
+    {% endfor %}
+</div>
+{% if board.wiegand_count > 0 %}
+<div class="mb-3">
+    <label class="form-label">Wiegand reader</label>
+    <select class="form-select form-select-sm" name="wiegand_reader">
+        <option value="">None</option>
+        {% for n in 1..board.wiegand_count %}
+            <option value="{{ n }}"{% if device and device.wiegand_reader == n %} selected{% endif %}{% if n in taken_readers %} disabled{% endif %}>Reader {{ n }}{% if n in taken_readers %} (in use){% endif %}</option>
+        {% endfor %}
+    </select>
+</div>
+{% endif %}
